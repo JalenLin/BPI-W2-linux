@@ -314,11 +314,39 @@ ICMP from eth0 too).
   on already), nor `rtl865x_enableDevPortForward()`'s ForceLink toggling,
   nor any ACL.
 
+## MAC address
+
+Neither RJ45 has an address of its own. u-boot leaves 00:10:20:30:40:50
+(CONFIG_ETHADDR) on every board; r8169soc and rtd1295-hwnat fall back to a
+random address. The efuse's 96-bit `uuid` cell (0x98017000 + 0x1a4, the
+BSP DT's `efuse_uuid`) reads all zero on this board (2026-10-05; other
+efuse words read fine), so the SoC offers no per-board ID to derive one
+from.
+
+The driver takes `local-mac-address`/`mac-address`/`nvmem-cells` from DT
+(`of_get_ethdev_address()`), else a random one, and supports changing it,
+live (`ndo_set_mac_address` rewrites netif entry 0, through which frames
+for us reach the CPU; verified: loop test clean after a live change).
+
+Tried and dropped (2026-10-05): eth1 = eth0 + 1 through a udev rule and a
+script in a PiKVM-style overlay (commit f7bf81a). It worked on two loads
+(same address, same DHCP lease), but it ties the feature to one userland,
+which this project avoids (AGENTS.md, "Scope"). eth0's address in the
+PiKVM image comes from udev and machine-id too, so the kernel cannot
+derive from it at probe.
+
+The mainline way to get "eth0, and eth0 + 1" is DT only: a `mac-base`
+nvmem cell referenced by both nodes with offsets 0 and 1
+(`nvmem-cells = <&macaddr 0>` / `<&macaddr 1>`), filled from a per-board
+store the boot loader or a factory partition provides (for example
+u-boot's environment `ethaddr` through the `u-boot,env` nvmem layout).
+That needs a per-board address stored somewhere first: the user's call,
+as it means writing the boot loader's environment or a partition.
+
 ## Open
 
-- **MAC address**: random on every load (no `local-mac-address`); DHCP
-  hands out a new lease each time. Needs a stable one: a DT property set
-  by u-boot, or one derived from eth0's.
+- **MAC address**: random on every load until a per-board address is
+  stored somewhere the DT can reach (see "MAC address").
 - Interrupt mitigation (`CPUIMCR`, `CPUIMTTR*`, `CPUIMPNTR*`; Realtek uses
   400 us / 32 packets): ~830k interrupts for 2.8 M packets now.
 - RX checksum: the core reports L3/L4 checksum OK; the driver still leaves
@@ -326,10 +354,8 @@ ICMP from eth0 too).
 - Pause (above). 10/100 Mbps not tried.
 - Remove what is only for bring-up before upstreaming (`nat_dump()`, the
   debugfs file).
-- Graduate into the PiKVM image: the node into the board DTS (from
-  `dts/nat-eth.dtsi`) and the driver into `kernel/mainline/` (see
-  docs/board-and-tooling.md, "Graduating a driver"), with the user's
-  agreement.
+- A permanent node: `dts/nat-eth.dtsi` into a board DTS (into the PiKVM
+  image's only if the user wants it there).
 
 A USB 3.0 gigabit adapter remains the no-driver alternative: the PiKVM
 image has `r8152` and `ax88179_178a`.
