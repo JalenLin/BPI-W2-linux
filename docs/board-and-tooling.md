@@ -1,0 +1,106 @@
+# The board, the PiKVM repository, and how to build and test
+
+## The board
+
+Banana Pi BPI-W2: Realtek RTD1296 (4x Cortex-A53, 1.4 GHz with the PiKVM
+cpufreq driver), 2 GiB DDR4, 8 GB eMMC, microSD, HDMI in, HDMI out, mini
+DisplayPort, two RJ45, SATA, PCIe, USB 3/2, a Type-C OTG port, IR receiver.
+
+It runs the PiKVM image from `../bpiw2_pikvm` (Linux 6.18 LTS, Arch Linux
+ARM, kvmd). That image is the base for all work here: boot it, then load the
+modules built here on top.
+
+- **Boot paths.** SW4 = 1: SPI flash + the SD card's u-boot. SW4 = 0: the
+  eMMC's u-boot, which boots the SD card if one is in, else the eMMC. See
+  `../bpiw2_pikvm/docs/11-install-and-use.md`.
+- **Network.** `eth0` (the RJ45 next to the USB ports) with DHCP. The last
+  address used is in `../bpiw2_pikvm/build/board_ip`. The image answers
+  mDNS as `bpi-w2-pikvm.local`.
+- **Login.** root, with the image's default password (see the PiKVM
+  repository; it may have been changed). Pass it as `BOARD_PASS`, never in
+  a committed file.
+- **Serial console.** 115200 8N1 on the board's debug UART, `/dev/ttyUSB0`
+  on the development host, reached through Docker:
+  `../bpiw2_pikvm/scripts/serial-cmd.sh`. Needed when the network is down,
+  and for u-boot.
+
+## Access helpers (in ../bpiw2_pikvm/scripts)
+
+| Script | Use |
+|---|---|
+| `board-ssh.sh "<cmd>"` | Run a command on the board (`BOARD_HOST=<ip>`) |
+| `board-ssh.sh --put <local> <remote>` / `--get <remote> <local>` | Copy files |
+| `push-kernel-mainline.sh [--modules] [--reboot]` | Install a freshly built kernel, dtb and modules on the running board |
+| `serial-cmd.sh "<cmd>" [seconds]` | Talk to the serial console |
+
+Reading registers: `/dev/mem` works for MMIO and the reserved-memory
+regions (`STRICT_DEVMEM` only blocks RAM). A tiny read-only peek in Python
+is enough (`mmap` the page, `struct.unpack_from(">I" or "<I", ...)`).
+Registers of a block whose clock is gated read `0xdeadbeef`. **Do not write
+registers by hand unless you know what is behind them** -- and never the
+PMIC (see AGENTS.md).
+
+## Building a driver here
+
+External modules, built against the PiKVM kernel tree, in its container:
+
+```sh
+(cd ../bpiw2_pikvm && make builder-mainline sources-mainline kernel-mainline)   # once
+scripts/build-module.sh <name>        # drivers/<name>/ -> drivers/<name>/*.ko
+scripts/push-module.sh <name>         # to the board, insmod, dmesg
+```
+
+`drivers/<name>/Kbuild` holds `obj-m += ...`. The module's vermagic must
+match the running kernel (`6.18.55-bpiw2` at the time of writing). After a
+kernel upgrade in the PiKVM repository, push that kernel first, then
+rebuild here.
+
+### Device tree
+
+A new driver needs its node in the board DTS,
+`../bpiw2_pikvm/kernel/mainline/rtd1296-bananapi-w2.dts`. Keep the node in
+`dts/<name>.dtsi` here. While testing, paste it into the board DTS as a
+local, uncommitted change (or on a branch of that repository), then:
+
+```sh
+(cd ../bpiw2_pikvm && make kernel-mainline && scripts/push-kernel-mainline.sh --reboot)
+```
+
+The mainline headers for this SoC: `dt-bindings/reset/realtek,rtd1295.h`
+(`RTD1295_RSTN_*`), the clocks are `<&crt_clk N>` (bit N of CLK_EN1, N-32 of
+CLK_EN2) and `<&iso_clk N>`, interrupts go through `&misc_irq_mux` /
+`&iso_irq_mux` or straight to the GIC. Syscons: `&crt`, `&iso`, `&misc`,
+`&sb2`, `&scpu_wrapper`.
+
+### Graduating a driver
+
+When a driver works and is wanted in the image, move it into the PiKVM
+repository the way its other drivers are kept there: the source in
+`kernel/mainline/`, a patch in `patches/linux-mainline/` that adds the
+Kconfig/Makefile lines, the copy line in `scripts/build-kernel-mainline.sh`,
+the option in `kernel/mainline/bpiw2.config`, the node in the board DTS, and
+a section in its docs/09 and docs/10. That happens on its `kernel-6.18`
+branch, with the user's agreement.
+
+## Where the reference material is
+
+Everything below is under `../bpiw2_pikvm/vendor/` (fetched by that
+repository's `scripts/prepare-sources.sh`; not committed anywhere).
+
+| Path | What |
+|---|---|
+| `bpi-w2-bsp/linux-rtk/` | BPI's BSP kernel 4.9: the Realtek drivers to read |
+| `bpi-w2-bsp/linux-rtk/arch/arm64/boot/dts/realtek/rtd129x/` | The BSP device trees; `.rtd-1296-bananapi-w2-2GB.dtb.dts.tmp` is the preprocessed W2 tree, all includes resolved |
+| `bpi-w2-bsp/u-boot-rtk/` | BPI's u-boot, sometimes the simplest version of an init sequence |
+| `bpi-1296-android7/` | BPI's Android 7 tree, a **sparse, blob-less** clone. `find` sees almost nothing: ask git (`git ls-tree -r HEAD --name-only`), then `git sparse-checkout add <path>` |
+| `linux-mainline/` | The 6.18 tree the PiKVM kernel is built from |
+
+The schematic (`../bpiw2_pikvm/docs/refs/bpi-w2-v1_1-pub.pdf`, not
+distributed): sheet titles by PDF page are 1 RTD1296, 3 MSDC, 4 power,
+5 PMU G2227, 6 HDMI, 7 DP, 8 PCIe, 9 USB, 10 SATA/USB hub, 11 GbE,
+12 HWNAT_0, 13 GPIO (40-pin header, IR, LEDs, buttons), 14 analog, 15 M.2.
+`pdftotext -layout` in a Docker container makes it searchable.
+
+The PiKVM repository's own docs record how every other block was brought up
+and what went wrong; `docs/09-mainline-bringup.md` is the long version,
+`docs/10-mainline-summary.md` the summary.

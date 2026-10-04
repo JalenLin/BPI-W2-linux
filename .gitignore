@@ -1,0 +1,20 @@
+# Build products of the external modules
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.*.cmd
+modules.order
+Module.symvers
+.tmp_versions/
+*.dtb
+/build/
+
+# Never commit credentials or vendor material that is not ours to share
+*.pem
+id_rsa*
+id_ecdsa*
+id_ed25519*
+authorized_keys
+*.pdf
