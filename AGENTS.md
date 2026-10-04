@@ -74,6 +74,7 @@ container, the images and the board access scripts. Read
 | `drivers/<feature>/` | One directory per driver, built as an external module against the PiKVM kernel tree |
 | `dts/` | Device-tree fragments for the board, to be merged into the board DTS when testing |
 | `scripts/` | Build and deploy helpers |
+| `scripts/board/` | Test tools that run on the board (MMIO peek, PHY registers, frame loop test, TCP throughput) |
 | `docs/` | Per-feature notes: what the hardware is, where the BSP code is, what is known, what has been tried |
 
 ## How to work on a feature
@@ -84,9 +85,12 @@ container, the images and the board access scripts. Read
 3. Write the driver in `drivers/<feature>/` (mainline APIs: `devm_*`,
    regmap or plain MMIO, `reset_control`, `clk`, existing subsystems such
    as libahci_platform, rc-core, the PCI host bridge helpers or phylink).
-4. Add its DT node to `dts/` and to the board DTS in `../bpiw2_pikvm` on a
-   local, uncommitted change while testing (or a work branch).
+4. Add its DT node to `dts/`. Test it as a runtime overlay (as
+   `drivers/nat-eth/` does; docs/board-and-tooling.md), or in the board
+   DTS in `../bpiw2_pikvm` on a local, uncommitted change (or a work
+   branch) -- installing a new DTB means asking first.
 5. Build, push and test on the board (docs/board-and-tooling.md).
 6. Each feature needs real hardware to test: a SATA disk, a PCIe card, an
-   IR remote, a cable in the second RJ45. As of 2026-10-04 the user has
-   none attached; ask before assuming.
+   IR remote, a cable in the second RJ45. As of 2026-10-05 only the
+   second RJ45 has its cable (to the same LAN as eth0); ask before
+   assuming anything else.

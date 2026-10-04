@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * The second RJ45: port 5 of the hardware NAT switch core, RGMII0 to an
+ * RTL8211F at MDIO address 1 (schematic page 12, "HWNAT_0").
+ * drivers/nat-eth/rtd1295-hwnat.c. Goes into the board DTS.
+ */
+&rbus {
+	nat: ethernet@60000 {
+		compatible = "realtek,rtd1295-hwnat";
+		reg = <0x60000 0x170000>;
+		interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&crt_clk 32>;			/* CLK_EN2 0: NAT */
+		resets = <&reset1 RTD1295_RSTN_NAT>;
+		realtek,sb2 = <&sb2>;			/* RGMII0 pad control */
+		/* the RTL8211F's RX delay is strapped on, TX delay is set by its driver */
+		phy-mode = "rgmii-id";
+		phy-handle = <&nat_phy>;
+
+		mdio {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			nat_phy: ethernet-phy@1 {
+				reg = <1>;
+				realtek,clkout-disable;
+			};
+		};
+	};
+};

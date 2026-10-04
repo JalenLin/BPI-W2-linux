@@ -1,11 +1,14 @@
 # The second RJ45 (hardware NAT engine)
 
-Status (2026-10-05): bring-up sequence mapped (clocks, resets, pads, PHY);
-switch core and CPU rings being read. No code yet. A cable is in the second
-socket. The first survey (2026-09-17)
-is `docs/06-changes.md` §11 on the `main` branch of `../bpiw2_pikvm`
-(`git -C ../bpiw2_pikvm show main:docs/06-changes.md`). The facts that
-matter are below.
+Status (2026-10-05): **works** as a loadable module,
+`drivers/nat-eth/rtd1295-hwnat.c`, with the node applied as a runtime
+overlay (no new board DTB yet). eth1 links at 1 Gbps, runs TCP at 940 Mbit/s
+each way, and eth0 is untouched. Not yet in the PiKVM image. See "Verified"
+and "Open" below.
+
+The first survey (2026-09-17) is `docs/06-changes.md` §11 on the `main`
+branch of `../bpiw2_pikvm`
+(`git -C ../bpiw2_pikvm show main:docs/06-changes.md`).
 
 ## Hardware
 
@@ -14,7 +17,7 @@ The two RJ45 sockets are driven by two different MACs:
 | Socket | MAC | PHY | State |
 |---|---|---|---|
 | Next to the USB ports | `gmac@98016000` (`r8169soc`, PiKVM patch 0008) | the SoC's embedded gigabit PHY (`ETN_MDI*`) | works, `eth0` |
-| The other one | **port 5 (MAC5)** of the hardware NAT engine, `0x98060000` | an external RTL8211F over RGMII0, MDIO address 1 | no driver |
+| The other one | **port 5 (MAC5)** of the hardware NAT engine, `0x98060000` | an external RTL8211F over RGMII0, MDIO address 1 | `rtd1295-hwnat` (this repo), eth1 |
 
 Schematic page 12 ("HWNAT_0"): `RGMII0_*` (RXC, RXCTL, RXD0-3, TXC, TXCTL,
 TXD0-3, MDIO/MDC) to the RTL8211F, whose line side is `NAT0_MDI0-3`.
@@ -43,8 +46,16 @@ shares the SATA0 PHY (`rtd129x_hwnat_set_sata_pllddsa()`,
   (RG5, 2K2) goes to 1.8VD too. So the RGMII0 pads need the 1.8 V setting
   (BSP `rgmii_voltage = <1>`).
 - RTL8211F strap pins: RXD3/PHYAD0, RXC/PHYAD1, RXCTL/PHYAD2 -> address 1
-  per the BSP. `PHYRSTB0` has a 4K7 pull-up to 0_DVDD33 and no GPIO found
-  driving it: no hardware reset line for the PHY.
+  (confirmed: ID 001c:c916 answers there). `PHYRSTB0` has a 4K7 pull-up to
+  0_DVDD33 and no GPIO found driving it: no hardware reset line for the PHY.
+- Delay straps, read at page 0xd08 before any driver touched them: reg 17
+  = 0x0009 (**TX delay off**), reg 21 = 0x0019 (**RX delay on**). So both
+  delays belong in the PHY: `phy-mode = "rgmii-id"`. With `rgmii-txid` the
+  mainline `realtek` driver turns the RX delay off and every received frame
+  fails its FCS at port 5 (seen in the MIB counters).
+- ISO `0x98007064` bit 1 ("RGMII/MDIO to GMAC", which r8169soc sets only in
+  its RGMII output modes) is 0: RGMII0 and its MDIO belong to the NAT
+  engine.
 
 ### Live state on the running PiKVM image (read with /dev/mem, 2026-10-05)
 
@@ -82,8 +93,10 @@ keep and what to drop:
 | ... then clear `POWERCUT_ETN.gphy_mdio_outside_ctrl_en`, set `POWERCUT_ETN.etn_gphy_switch_nat` | **Drop.** This is what takes the embedded PHY away from eth0. |
 | `rtd129x_switch_init()`: `EEECR = 0`, `EEEABICR1 = 0`; `EPIDR` embedded PHY IDs | Keep EEE off; EPIDR only matters for embedded PHYs. |
 | ... MAC4: `EPIDR` port 4, `PITCR` port 4 = UTP, `rtd129x_phy_8211f_init(4)` (MDIO writes at address 4) | **Drop.** No MDIO traffic to address 4. |
-| ... MAC5: `PCRP5.ExtPHYID = 1`; `PITCR` port 5 = GMII/MII/RGMII; `P5GMIICR.CFG_GMAC = RGMII`; `rtd129x_phy_8211f_init(1)`; RTL8211F page 0xd08 reg 17 bit 8 (TX delay) | Keep. Leave the RTL8211F setup to the mainline `realtek` PHY driver with `phy-mode = "rgmii-txid"`, after checking that it matches (CLKOUT off, SSC, TX delay). |
-| probe: interrupt mitigation `CPUIMTTR0..3`, `CPUIMPNTR0..2`, `CPUIMCR` | Keep (or NAPI with mitigation off at first). |
+| ... MAC5: `PCRP5.ExtPHYID = 1`; `PITCR` port 5 = GMII/MII/RGMII; `P5GMIICR.CFG_GMAC = RGMII`; `rtd129x_phy_8211f_init(1)`; RTL8211F page 0xd08 reg 17 bit 8 (TX delay) | Keep, with the RTL8211F left to the mainline `realtek` PHY driver, `phy-mode = "rgmii-id"`, `realtek,clkout-disable`. Its RXC/system-clock SSC settings are not set (mainline has no option for them). |
+| probe: interrupt mitigation `CPUIMTTR0..3`, `CPUIMPNTR0..2`, `CPUIMCR` | Not set yet (NAPI only, `CPUIMCR` = 0). |
+| `re865x_probe()` on the 8197F core: `CPUICR1.CF_PKT_HDR_TYPE = TX_PKTHDR_SHORTCUT_LSO`, `CF_TX_GATHER` (TSO/GSO builds) | **Keep -- essential**, see "Findings". |
+| `rtl865x_initAsicL2()`, `rtl865x_config()` | The subset in "What the driver does". |
 
 ## The vendor driver
 
@@ -104,11 +117,27 @@ The parts a plain NIC needs:
 
 | File | Lines | What |
 |---|---|---|
-| `rtl_nic.c` | 28,439 | The netdev driver (most of it router features) |
-| `rtl865xc_swNic.c`, `.h` | 2,761 | The CPU port's descriptor rings (RX/TX via mbuf/pkthdr) |
-| `rtl819x_switch.c` | 535 | Switch setup |
-| `AsicDriver/rtd129x_clk.c` | 914 | Clocks, resets, power for the NAT block |
-| `AsicDriver/rtl865x_asicCom.c`, `rtl865x_asicL2.c` | 2,247, 11,669 | Switch core registers, L2 tables |
+| `rtl_nic.c` | 28,439 | The netdev driver (most of it router features); `re865x_probe()`, `re865x_open()`, `rtl865x_config()` |
+| `rtl819x_swNic.c`, `.h` | 2,189, 637 | **The rings this core uses**: the RTL8197F six-word descriptors (`New_swNic_*`) |
+| `rtl865xc_swNic.c`, `.h` | 2,761 | The older pkthdr/mbuf rings; on this core only its headers (ring sizes) matter |
+| `rtl819x_switch.c` | 535 | Only the OpenWrt swconfig interface |
+| `AsicDriver/rtd129x_clk.c` | 914 | Clocks, resets, pads, PHY init for the NAT block |
+| `AsicDriver/rtl865x_asicCom.c`, `rtl865x_asicL2.c` | 2,247, 11,669 | Switch core registers: VLAN/netif tables, MDIO, ports |
+| `AsicDriver/rtl865x_asicBasic.S` | 16,317 | Table access (`_rtl8651_forceAddAsicEntry` etc.), shipped **only as ARM64 compiler output**; readable, see "Table access" |
+| `AsicDriver/rtl865xc_asicregs.h`, `rtl865x_asicCom.h` | | Register and table-entry layouts |
+
+The NAT block is an **RTL8197F** switch core: `RTD_1295_HWNAT` selects
+`RTL_8197F`, and `rtl_types.h` then `#define`s
+`CONFIG_RTL_SWITCH_NEW_DESCRIPTOR`.
+
+Reading tip: the code is unreadable with all its `#ifdef`s. Resolve the
+Kconfig with kconfiglib (`hw_nat/Kconfig` with `RTD_1295_HWNAT=y`; 42
+symbols come out set, among them `RTL_8197F`, `RTL_MULTI_LAN_DEV`,
+`RTL_TSO`, `RTL_GSO`, `OPENWRT_SDK`) and strip the dead branches with
+`unifdef` (both in Docker): `rtl_nic.c` drops from 28k to 9k lines. But
+symbols `#define`d in headers must be left alone: treating
+`CONFIG_RTL_SWITCH_NEW_DESCRIPTOR` as undefined hid the one line that
+selects the descriptor format, and cost a debugging round.
 
 The board DTS in that tree has the node disabled. The router build enables
 it with `Openwrt/target/linux/rtd1295/dts/patches/001-Enable-router-mac-but-disable-umac.patch`,
@@ -134,26 +163,173 @@ by SATA, 1: interface used by NAT", and a `sata_func_exist_0` reset is
 handled there. That is MAC0 in SGMII mode borrowing the SATA0 PHY as its
 SerDes (see "Port numbering" above); the second RJ45 does not need it.
 
-## Approach
+The vendor's order: `re865x_probe()` (clocks, `rtl865x_initAsicL2()`,
+`rtl865x_init()`, `rtl865x_config(vlanconfig)`, the CPUICR1 descriptor
+setup), then `re865x_open()` -> `rtl865x_init_hw()` -> `New_swNic_init()`,
+`rtl865x_start()`, `rtl865x_enableDevPortForward()`. No smaller copy of
+this driver exists in BPI's trees (u-boot and the BSP 4.9 kernel have none).
 
-1. Map out the minimum from `rtd129x_clk.c` (clock, reset, power for NAT,
-   minus the GPHY switch) and `rtl_nic.c` / `swNic.c` (core reset,
-   port 5 as RGMII with the PHY address, CPU port, VLAN/L2 so frames reach
-   the CPU, the RX/TX rings).
-2. Write a small netdev driver with `phylink` or `phylib` for the RTL8211F
-   (mainline `realtek` PHY driver) over the NAT block's MDIO.
-3. Test with a cable in the second socket, `eth0` staying up the whole time.
+## The driver
 
-A USB 3.0 gigabit adapter works today without any of this: the PiKVM image
-has `r8152` and `ax88179_178a`.
+`drivers/nat-eth/rtd1295-hwnat.c` (compatible `realtek,rtd1295-hwnat`),
+DT node in `dts/nat-eth.dtsi`. A plain NIC: phylib, NAPI, one RX and one
+TX ring; no offloads, no switch features.
 
-`rtl819x_switch.c` turned out to be only the OpenWrt swconfig interface;
-the switch setup is in `rtl_nic.c` (`re865x_probe()`: clocks, then
-`rtl865x_initAsicL2()`, `rtl865x_init()`, `rtl865x_config(vlanconfig)`,
-then the rings in `re865x_open()` -> `rtl865x_init_hw()` ->
-`RTL_swNic_init()`). No smaller copy of this driver exists in BPI's trees
-(u-boot and the BSP 4.9 kernel have none).
+### What it does
 
-## Tried
+Probe:
 
-Nothing beyond reading.
+1. RGMII0 pads to 1.8 V through the `realtek,sb2` syscon (`MUXPAD_RG0`,
+   `PFUNC_RG0..2`).
+2. NAT clock and reset in Realtek's order: assert reset, clock on, clock
+   off, deassert, clock on.
+3. Switch core, L2 only: EEE off; `MSCR` = L2 only (no ACL, L3, L4, STP);
+   L2 aging on; netif, VLAN (4096) and L2 (1024) tables cleared; netif
+   decision by VLAN, `NAPTF2CPU`, unknown multicast to CPU; VLAN ingress
+   filter off; checksum-error frames not forwarded; vendor flow-control
+   thresholds (`PBFCR5`/`PBFCR6` = 0x1ac/0x1a6); one output queue per
+   port; every CPU queue to RX ring 0.
+4. Port 5: `PITCR` RGMII, `P5GMIICR` RGMII + `Conf_done`, `PCRP5` with
+   ExtPHYID = the PHY's address, **force mode** (see "Findings"), STP
+   forwarding, PHY interface on.
+5. VLAN 1 = {port 5}, untagged, FID 0; netif 0 = VLAN 1 with the
+   interface's MAC; port 5's PVID = 1.
+6. `CPUICR1`: new descriptor format, TX gather, little-endian.
+7. MDIO bus (`MDCIOCR`/`MDCIOSR`), the `mdio` child node, then the netdev.
+
+Open: rings (256 RX, 256 TX; rings 1-5 and TX 1-3 get two empty,
+CPU-owned descriptors so a stray frame finds no buffer), TX ring 0 tail
+in `DMA_CR1` + `DMA_CR4.TX0_TAIL_AWARE` (as Realtek: no EOR on TX),
+`CPUICR` = TX/RX on, 128-word bursts, `DMA_CR0` FIFO marks, interrupts
+RX done / RX runout / TX ring 0 all done, `SSIR.TRXRDY`.
+
+Data path: TX is a direct send to port 5 (`opts4` port mask bit 5,
+`opts3` VLAN 1, lengths + 4 for the FCS the MAC appends), then
+`CPUICR.TXFD`; completion by the ring's current-descriptor pointer
+(`CPUTPDCR0`), as Realtek does. RX polls both owner bits (`opts1[0]`,
+`opts5[15]`), drops frames whose L3/L4 checksum flags are not OK (as
+Realtek), refills, and clears `CPUIISR` runout to resume reception.
+`nat_adjust_link()` mirrors phylib's link, speed and duplex into `PCRP5`.
+
+A debugfs file, `/sys/kernel/debug/rtd1295-hwnat`, dumps the main
+registers, the MIB counters of port 5 and the CPU port, and the first
+descriptors of both rings.
+
+### Register map (offsets from 0x98060000)
+
+| Offset | Block |
+|---|---|
+| 0x000000 + (type << 16) + index * 32 | Switch tables (read side); type 0 L2, 4 netif, 6 VLAN |
+| 0x160000 | CPU interface: `CPUICR`, `CPURPDCR0-5`, `CPUTPDCR0-1`, `CPUIIMR`, `CPUIISR`, `CPUQDM*`, `DMA_CR0-4`, `CPUTPDCR2-3`, `CPUIM*`, `CPUICR1` (0xa4) |
+| 0x161000 | MIB counters: in at 0x100 + port * 0x80, out at 0x800 + port * 0x80 (port 6 = CPU) |
+| 0x164000 | MAC control: `MDCIOCR` 0x004, `MDCIOSR` 0x008, `CSCR` 0x048 |
+| 0x164100 | Ports: `PITCR`, `PCRP0-8` 0x104.., `PSRP0-8` 0x128.., `P5GMIICR` 0x150, `EEECR` 0x160 |
+| 0x164200 | `SSIR` 0x204 (`TRXRDY`) |
+| 0x164400 | ALE: `TEACR`, `MSCR` 0x410, `SWTCR0` 0x418, `FFCR` 0x428 |
+| 0x164500 | Flow control thresholds: `PBFCR0-6` 0x50c.. |
+| 0x164700 | `QNUMCR` 0x754 |
+| 0x164a00 | VLAN: `VCR0`, `PVCR0..` 0xa08 (12 bits per port, two per word) |
+| 0x164d00 | Table access: `SWTACR`, `SWTASR`, `SWTAA` 0xd08, `TCR0-7` 0xd20 |
+| 0x165100 | `MACCTRL1` |
+| 0x169000 | NAT wrapper (SGMII/SerDes; not used) |
+
+### Table access
+
+From the compiler output in `rtl865x_asicBasic.S`: set `SWTCR0` bit 18
+(stop the lookup unit), wait for bit 19; wait for `SWTACR` bit 0 to
+clear; write the entry's words to `TCR0..`; write `SWTAA` = the table's
+**physical** address (`0x98060000 + (type << 16) + index * 32`); write 9
+(force add) to `SWTACR`; wait for bit 0; clear `SWTCR0` bit 18. Words per
+entry (`_rtl8651_asicTableSize`): L2 2, netif 5, VLAN 3, ACL 11.
+
+## Testing it
+
+The base DTB has no `__symbols__`, so the node goes in as a runtime
+overlay with the running board's phandles:
+
+```sh
+scripts/build-nat-overlay.sh          # writes drivers/nat-eth/nat-overlay.dtso
+scripts/build-module.sh nat-eth       # rtd1295-hwnat.ko and nat-overlay-mod.ko
+# on the board: insmod nat-overlay-mod.ko (adds the node), insmod rtd1295-hwnat.ko
+```
+
+`rmmod nat_overlay_mod` removes the node again. Nothing on the board's
+disk changes. Re-run the script after a new board DTB.
+
+The image's networkd brings eth1 up with DHCP as soon as it appears (it
+matches `eth*`). Both NICs then sit on the same subnet, so to test the
+wire move eth1 into a network namespace (`scripts/board/README.md`).
+
+## Verified (2026-10-05, cable to the same LAN switch as eth0)
+
+- Probe: MDIO works through the NAT block; RTL8211F ID 001c:c916 at 1.
+- Link 1 Gbps full, stable over repeated loads, no flap.
+- DHCP on eth1.
+- `looptest.py` (frames of 60-1514 bytes from one NIC to the other's MAC
+  across the LAN switch, every byte compared): 4000/4000 each way, also
+  **while the eMMC read 104 MB/s with `O_DIRECT`** (the SB2 concern).
+- TCP (`tput.py`, eth1 in a namespace): eth1 -> eth0 940 Mbit/s,
+  eth0 -> eth1 941 Mbit/s. Both at once plus the eMMC read: 564 + 630
+  Mbit/s (four A53 cores running both Python ends), no errors.
+- rmmod/insmod with the interface up, a dozen times.
+- eth0 stayed up with its address through all of it; no eth0 messages in
+  dmesg.
+
+Not verified: an SD card under concurrent load (none was in); 10/100
+Mbps operation; long runs (hours); the gateway answering ping (it ignores
+ICMP from eth0 too).
+
+## Findings
+
+- **Descriptor format.** Out of reset `CPUICR1.CF_PKT_HDR_TYPE` = 0
+  selects the older RTL8198C layout. With the six-word descriptors still
+  written, the core took descriptor 0, sent a 1538-byte frame with a bad
+  FCS into the switch, and stopped with `CPUTPDCR0` at ring base + 4.
+  `CF_PKT_HDR_TYPE = 1` (`TX_PKTHDR_SHORTCUT_LSO`) fixes it.
+- **The MAC manages the PHY unless told not to.** With `PCR.EnForceMode`
+  = 0, the port polls the PHY at ExtPHYID and `PCR[22:16]` is its
+  advertisement (out of reset: all speeds, pause). Next to phylib this
+  dropped the link a second after it came up, and it renegotiated down to
+  100 Mbps; once it dropped in the middle of a TCP transfer for 11 s.
+  Force mode with `PollLinkStatus` = 0, link/speed/duplex from phylib.
+- **ExtPHYID routes MDIO.** Pointing port 5's ExtPHYID at an unused
+  address (so the MAC would poll nothing) made every MDIO read of
+  address 1 return 0: the MDIO controller drives the pins of the port
+  whose ExtPHYID matches. It must stay the PHY's address.
+- **EEE.** The RTL8211F advertises EEE by default and phylib keeps that;
+  the link then dropped once ~1 s after coming up, every time. The driver
+  calls `phy_disable_eee()` (the MAC has `EEECR` = 0 anyway).
+- **Pause does not work.** With pause advertised and the MAC's forced
+  pause bits set from the result, TCP stalled under load and the loop
+  test lost and corrupted frames (one 60-byte frame arrived as 1514
+  bytes; others differed from byte 128). No PAUSE frame was counted in
+  either direction. Same with the vendor's flow-control thresholds. Pause
+  is left off; the cause is not known.
+- **The CPU port's MIB counts every frame from the DMA as an FCS error**
+  (its "in" side, `fcs_err` = `rxdv`), apparently because the FCS is
+  appended later. Not a fault.
+- `dot1dTpPortInDiscards` on port 5: 339 out of 2.55 M frames under the
+  concurrent test, presumably while RX ring 0 was full.
+- The core did not need the NAT SRAM power domain or PLLDDSB touched (both
+  on already), nor `rtl865x_enableDevPortForward()`'s ForceLink toggling,
+  nor any ACL.
+
+## Open
+
+- **MAC address**: random on every load (no `local-mac-address`); DHCP
+  hands out a new lease each time. Needs a stable one: a DT property set
+  by u-boot, or one derived from eth0's.
+- Interrupt mitigation (`CPUIMCR`, `CPUIMTTR*`, `CPUIMPNTR*`; Realtek uses
+  400 us / 32 packets): ~830k interrupts for 2.8 M packets now.
+- RX checksum: the core reports L3/L4 checksum OK; the driver still leaves
+  `CHECKSUM_NONE`. TX checksum/TSO offload not used.
+- Pause (above). 10/100 Mbps not tried.
+- Remove what is only for bring-up before upstreaming (`nat_dump()`, the
+  debugfs file).
+- Graduate into the PiKVM image: the node into the board DTS (from
+  `dts/nat-eth.dtsi`) and the driver into `kernel/mainline/` (see
+  docs/board-and-tooling.md, "Graduating a driver"), with the user's
+  agreement.
+
+A USB 3.0 gigabit adapter remains the no-driver alternative: the PiKVM
+image has `r8152` and `ax88179_178a`.

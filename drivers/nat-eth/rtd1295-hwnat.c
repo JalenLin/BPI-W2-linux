@@ -1,0 +1,1210 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Realtek RTD1295/RTD1296 hardware NAT switch core as a plain NIC.
+ *
+ * The NAT engine at 0x98060000 is an RTL8197F-style switch core with a CPU
+ * port. On the Banana Pi BPI-W2 its port 5 (RGMII0) carries an RTL8211F
+ * and the second RJ45. This driver brings up port 5 alone and runs the
+ * switch as a two-port bridge between port 5 and the CPU: no NAT, no
+ * routing, no L2 offload. It does not touch the embedded GPHY or the ETN
+ * clocks, which belong to the ordinary GMAC (r8169soc, eth0).
+ *
+ * Register layout and bring-up order come from Realtek's OpenWrt driver
+ * (drivers/soc/realtek/rtd129x/hw_nat in BPI's Android 7 tree); see
+ * docs/second-ethernet.md in this repository.
+ */
+
+#include <linux/bitfield.h>
+#include <linux/clk.h>
+#include <linux/debugfs.h>
+#include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/etherdevice.h>
+#include <linux/interrupt.h>
+#include <linux/iopoll.h>
+#include <linux/mfd/syscon.h>
+#include <linux/module.h>
+#include <linux/netdevice.h>
+#include <linux/of.h>
+#include <linux/of_mdio.h>
+#include <linux/of_net.h>
+#include <linux/phy.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+#include <linux/reset.h>
+
+#define DRV_NAME		"rtd1295-hwnat"
+
+/* Switch tables: table t, entry i at (t << 16) + i * 32, from the base. */
+#define TBL_L2			0
+#define TBL_NETIF		4
+#define TBL_VLAN		6
+#define TBL_ENTRY_SIZE		32
+#define TBL_ADDR(t, i)		(((t) << 16) + (i) * TBL_ENTRY_SIZE)
+
+#define NETIF_ENTRIES		8
+#define VLAN_ENTRIES		4096
+#define L2_ENTRIES		(256 * 4)
+
+/* CPU interface */
+#define CPUICR			0x160000
+#define  CPUICR_TXCMD		BIT(31)
+#define  CPUICR_RXCMD		BIT(30)
+#define  CPUICR_BURST_128W	(2 << 28)
+#define  CPUICR_MBUF_2048	(4 << 24)
+#define  CPUICR_TXFD		BIT(23)
+#define CPURPDCR(n)		(0x160004 + 4 * (n))	/* RX ring n, current desc */
+#define CPUTPDCR0		0x160020		/* TX ring 0, current desc */
+#define CPUTPDCR1		0x160024
+#define CPUIIMR			0x160028
+#define CPUIISR			0x16002c
+#define  CPUII_LINK_CHANGE	BIT(31)
+#define  CPUII_RX_RUNOUT_ALL	(0x3f << 17)
+#define  CPUII_TX_ALL_DONE3	BIT(13)
+#define  CPUII_TX_ALL_DONE2	BIT(12)
+#define  CPUII_RX_DONE_ALL	(0x3f << 3)
+#define  CPUII_TX_ALL_DONE1	BIT(2)
+#define  CPUII_TX_ALL_DONE0	BIT(1)
+#define CPUQDM0			0x160030
+#define CPUQDM2			0x160034
+#define CPUQDM4			0x160038
+#define DMA_CR0			0x16003c
+#define  DMA_CR0_FIFO_MASK	0xffff
+#define  DMA_CR0_FIFO_MARKS	0xa0a0
+#define DMA_CR1			0x160040		/* TX ring 0 tail offset */
+#define CPUTPDCR2		0x160060
+#define CPUTPDCR3		0x160064
+#define CPUIMCR			0x160080
+#define DMA_CR4			0x1600a0
+#define  DMA_CR4_TX0_TAIL_AWARE	BIT(0)
+#define CPUICR1			0x1600a4
+#define  CPUICR1_PKT_HDR_TYPE	GENMASK(9, 8)
+#define   PKT_HDR_NEW_DESC	1	/* the six-word descriptors below */
+#define  CPUICR1_TX_GATHER	BIT(6)
+#define  CPUICR1_TSO_ID_SEL	BIT(4)
+#define  CPUICR1_LITTLE_ENDIAN	BIT(1)
+#define  CPUICR1_TXRX_DIV_LX	BIT(0)
+
+/* MAC control */
+#define MDCIOCR			0x164004
+#define  MDCIO_WRITE		BIT(31)
+#define  MDCIO_PHY		GENMASK(28, 24)
+#define  MDCIO_REG		GENMASK(20, 16)
+#define  MDCIO_DATA		GENMASK(15, 0)
+#define MDCIOSR			0x164008
+#define  MDCIOSR_BUSY		BIT(31)
+#define  MDCIOSR_READ_ERR	BIT(30)
+#define CSCR			0x164048
+#define  CSCR_L4_RECALC		BIT(5)
+#define  CSCR_L3_RECALC		BIT(4)
+#define  CSCR_ERR_ALLOW		GENMASK(2, 0)
+
+/* Port control */
+#define PITCR			0x164100
+#define  PITCR_P5_TYPE		GENMASK(11, 10)		/* 0: GMII/MII/RGMII */
+#define PCRP(n)			(0x164104 + 4 * (n))
+#define  PCR_EXT_PHY_ID		GENMASK(30, 26)	/* also routes MDIO to this port's pins */
+#define  PCR_FORCE_MODE		BIT(25)
+#define  PCR_POLL_LINK		BIT(24)
+#define  PCR_FORCE_LINK		BIT(23)
+#define  PCR_FORCE_SPEED	GENMASK(20, 19)	/* 0: 10M, 1: 100M, 2: 1G */
+#define  PCR_FORCE_DUPLEX	BIT(18)
+#define  PCR_PAUSE		GENMASK(17, 16)	/* forced: [0] TX, [1] RX pause */
+#define  PCR_FORCE_MASK		(PCR_EXT_PHY_ID | PCR_FORCE_MODE | \
+				 PCR_POLL_LINK | PCR_FORCE_LINK | \
+				 GENMASK(22, 16))
+#define  PCR_STP_STATE		GENMASK(5, 4)
+#define   PCR_STP_FORWARDING	3
+#define  PCR_MAC_NORMAL		BIT(3)			/* 0: MAC held in reset */
+#define  PCR_PHY_IF_EN		BIT(0)
+#define PSRP(n)			(0x164128 + 4 * (n))
+#define  PSR_LINK_UP		BIT(4)
+#define  PSR_DUPLEX		BIT(3)
+#define  PSR_SPEED		GENMASK(1, 0)
+#define P5GMIICR		0x164150
+#define  GMIICR_MODE		GENMASK(24, 23)		/* 0: RGMII */
+#define  GMIICR_CONF_DONE	BIT(6)
+#define EEECR			0x164160
+#define EEEABICR1		0x164164
+
+/* SSIR: system init/reset */
+#define SSIR			0x164204
+#define  SSIR_TRXRDY		BIT(0)
+
+/* Address lookup engine */
+#define TEACR			0x164400
+#define  TEACR_L2_AGING_OFF	BIT(0)
+#define  TEACR_L4_AGING_OFF	BIT(1)
+#define RMACR			0x164408
+#define  RMACR_BPDU		BIT(0)
+#define MSCR			0x164410
+#define  MSCR_STP		BIT(5)
+#define  MSCR_IN_ACL		BIT(4)
+#define  MSCR_OUT_ACL		BIT(3)
+#define  MSCR_L4		BIT(2)
+#define  MSCR_L3		BIT(1)
+#define  MSCR_L2		BIT(0)
+#define SWTCR0			0x164418
+#define  SWTCR0_NETIF_DECISION	GENMASK(17, 16)		/* 0: by VLAN */
+#define  SWTCR0_TLU_STOPPED	BIT(19)
+#define  SWTCR0_TLU_STOP	BIT(18)
+#define  SWTCR0_NAPTF2CPU	BIT(14)
+#define  SWTCR0_WAN_ROUTE	GENMASK(4, 3)
+#define FFCR			0x164428
+#define  FFCR_UNKNOWN_UC2CPU	BIT(1)
+#define  FFCR_UNKNOWN_MC2CPU	BIT(0)
+
+/* Flow control thresholds, per port (6 = CPU) */
+#define PBFCR(n)		(0x16450c + 4 * (n))
+#define  PBFCR_FCOFF		GENMASK(25, 16)
+#define  PBFCR_FCON		GENMASK(9, 0)
+
+/* Output queues */
+#define QNUMCR			0x164754
+
+/* VLAN */
+#define VCR0			0x164a00
+#define  VCR0_INGRESS_FILTER	GENMASK(8, 0)
+#define PVCR(n)			(0x164a08 + ((n) / 2) * 4)
+#define  PVCR_PVID(n)		((n) & 1 ? GENMASK(27, 16) : GENMASK(11, 0))
+
+/* Table access */
+#define SWTACR			0x164d00
+#define  SWTACR_BUSY		BIT(0)
+#define  SWTACR_FORCE_ADD	0x9
+#define SWTASR			0x164d04
+#define SWTAA			0x164d08
+#define TCR(n)			(0x164d20 + 4 * (n))
+
+#define MACCTRL1		0x165100
+#define  MACCTRL1_CMAC_CLK_SEL	BIT(0)
+
+/* SB2 pad control for RGMII0 (the RTL8211F), through the sb2 syscon */
+#define SB2_PFUNC_RG0		0x960	/* slew rate */
+#define SB2_PFUNC_RG1		0x964	/* TXD drive */
+#define SB2_PFUNC_RG2		0x968	/* RXD drive */
+#define SB2_MUXPAD_RG0		0x96c
+#define  SB2_MUXPAD_RGMII	0x05555555
+
+/* Descriptors: six little-endian words, 32-bit buffer addresses */
+struct nat_desc {
+	__le32 opts1;
+	__le32 addr;
+	__le32 opts2;
+	__le32 opts3;
+	__le32 opts4;
+	__le32 opts5;
+};
+
+#define DESC_OWN		BIT(0)		/* owned by the switch core */
+#define DESC_EOR		BIT(1)
+#define DESC_LS			BIT(2)
+#define DESC_FS			BIT(3)
+
+#define RX1_BUF_SIZE		GENMASK(31, 16)
+#define RX2_LEN			GENMASK(13, 0)
+#define RX4_SPA			GENMASK(15, 13)
+#define RX4_DVLAN		GENMASK(27, 16)
+#define RX5_L3CSOK		BIT(31)
+#define RX5_L4CSOK		BIT(30)
+#define RX5_OWN2		BIT(15)
+
+#define TX1_PH_LEN		GENMASK(22, 6)
+#define TX2_MLEN		GENMASK(31, 15)
+#define TX3_DVLAN		GENMASK(11, 0)
+#define TX4_DPORTS		GENMASK(30, 24)
+
+#define NAT_PORT		5
+#define NAT_VID			1
+#define NAT_RX_RINGS		6
+#define NAT_TX_RINGS		4
+#define NAT_RX_DESCS		256
+#define NAT_TX_DESCS		256
+#define NAT_SPARE_DESCS		2	/* rings the hardware has but we do not use */
+#define NAT_RX_BUF		1540	/* frame + 2 VLAN tags + FCS */
+#define NAT_NAPI_WEIGHT		64
+
+struct nat_buf {
+	struct sk_buff *skb;
+	dma_addr_t dma;
+	unsigned int len;
+};
+
+struct nat_ring {
+	struct nat_desc *desc;
+	dma_addr_t dma;
+	unsigned int count;
+	struct nat_buf *buf;
+	unsigned int head;	/* next to fill (TX) or to read (RX) */
+	unsigned int tail;	/* next to reclaim (TX) */
+};
+
+struct nat_priv {
+	struct device *dev;
+	struct net_device *ndev;
+	void __iomem *base;
+	phys_addr_t phys;
+	struct regmap *sb2;
+	struct clk *clk;
+	struct reset_control *rst;
+	int irq;
+
+	struct mii_bus *mii;
+	struct device_node *phy_np;
+	u32 phy_addr;
+	phy_interface_t phy_mode;
+	int last_link;
+
+	struct napi_struct napi;
+	spinlock_t tx_lock;
+	struct nat_ring rx[NAT_RX_RINGS];
+	struct nat_ring tx[NAT_TX_RINGS];
+
+	struct dentry *dbg;
+};
+
+static u32 nat_r(struct nat_priv *p, u32 reg)
+{
+	return readl(p->base + reg);
+}
+
+static void nat_w(struct nat_priv *p, u32 reg, u32 val)
+{
+	writel(val, p->base + reg);
+}
+
+static void nat_rmw(struct nat_priv *p, u32 reg, u32 clr, u32 set)
+{
+	nat_w(p, reg, (nat_r(p, reg) & ~clr) | set);
+}
+
+/* ---- switch tables ---- */
+
+static int nat_tbl_write(struct nat_priv *p, unsigned int type,
+			 unsigned int idx, const u32 *words, unsigned int n)
+{
+	unsigned int i;
+	u32 v;
+	int ret;
+
+	/* stop the table lookup unit while the entry changes */
+	nat_rmw(p, SWTCR0, 0, SWTCR0_TLU_STOP);
+	ret = readl_poll_timeout_atomic(p->base + SWTCR0, v,
+					v & SWTCR0_TLU_STOPPED, 1, 10000);
+	if (ret)
+		goto out;
+	ret = readl_poll_timeout_atomic(p->base + SWTACR, v,
+					!(v & SWTACR_BUSY), 1, 10000);
+	if (ret)
+		goto out;
+
+	for (i = 0; i < n; i++)
+		nat_w(p, TCR(i), words[i]);
+	/* the access address is the table's bus address, not ours */
+	nat_w(p, SWTAA, p->phys + TBL_ADDR(type, idx));
+	nat_w(p, SWTACR, SWTACR_FORCE_ADD);
+	ret = readl_poll_timeout_atomic(p->base + SWTACR, v,
+					!(v & SWTACR_BUSY), 1, 10000);
+out:
+	nat_rmw(p, SWTCR0, SWTCR0_TLU_STOP, 0);
+	return ret;
+}
+
+static int nat_tbl_clear(struct nat_priv *p, unsigned int type,
+			 unsigned int count, unsigned int words)
+{
+	static const u32 zero[8];
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < count; i++) {
+		ret = nat_tbl_write(p, type, i, zero, words);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static int nat_set_vlan(struct nat_priv *p, u16 vid, u32 members,
+			u32 untagged, u32 fid)
+{
+	/* word 0: members[5:0], ext members[8:6], untag[14:9], ext untag[17:15], fid[19:18] */
+	u32 w[3] = {
+		FIELD_PREP(GENMASK(8, 0), members) |
+		FIELD_PREP(GENMASK(17, 9), untagged) |
+		FIELD_PREP(GENMASK(19, 18), fid),
+	};
+
+	return nat_tbl_write(p, TBL_VLAN, vid, w, ARRAY_SIZE(w));
+}
+
+static int nat_set_netif(struct nat_priv *p, unsigned int idx, u16 vid,
+			 const u8 *mac, unsigned int mtu)
+{
+	u32 w[5] = { 0 };
+
+	/* word 0: valid[0], vid[12:1], mac[18:0] at [31:13] */
+	w[0] = BIT(0) | FIELD_PREP(GENMASK(12, 1), vid) |
+	       FIELD_PREP(GENMASK(31, 13),
+			  (mac[3] << 16 | mac[4] << 8 | mac[5]) & 0x7ffff);
+	/* word 1: mac[47:19] at [28:0]; no hardware routing */
+	w[1] = FIELD_PREP(GENMASK(28, 0),
+			  mac[0] << 21 | mac[1] << 13 | mac[2] << 5 | mac[3] >> 3);
+	/* word 2: ACL ranges 0, mac mask low bit at [31] */
+	w[2] = BIT(31);
+	/* word 3: mac mask high [1:0] = 3 (one address), mtu [16:2], mtu v6 [31:17] */
+	w[3] = FIELD_PREP(GENMASK(1, 0), 3) |
+	       FIELD_PREP(GENMASK(16, 2), mtu) |
+	       FIELD_PREP(GENMASK(31, 17), mtu);
+
+	return nat_tbl_write(p, TBL_NETIF, idx, w, ARRAY_SIZE(w));
+}
+
+/* ---- MDIO ---- */
+
+static int nat_mdio_wait(struct nat_priv *p, u32 *v)
+{
+	return readl_poll_timeout(p->base + MDCIOSR, *v,
+				  !(*v & MDCIOSR_BUSY), 10, 100000);
+}
+
+static int nat_mdio_read(struct mii_bus *bus, int addr, int reg)
+{
+	struct nat_priv *p = bus->priv;
+	u32 v;
+	int ret;
+
+	nat_w(p, MDCIOCR, FIELD_PREP(MDCIO_PHY, addr) |
+			  FIELD_PREP(MDCIO_REG, reg));
+	ret = nat_mdio_wait(p, &v);
+	if (ret)
+		return ret;
+	if (v & MDCIOSR_READ_ERR)
+		return -EIO;
+	return v & 0xffff;
+}
+
+static int nat_mdio_write(struct mii_bus *bus, int addr, int reg, u16 val)
+{
+	struct nat_priv *p = bus->priv;
+	u32 v;
+
+	nat_w(p, MDCIOCR, MDCIO_WRITE | FIELD_PREP(MDCIO_PHY, addr) |
+			  FIELD_PREP(MDCIO_REG, reg) | val);
+	return nat_mdio_wait(p, &v);
+}
+
+static int nat_mdio_init(struct nat_priv *p)
+{
+	struct device_node *np;
+	int ret;
+
+	p->mii = devm_mdiobus_alloc(p->dev);
+	if (!p->mii)
+		return -ENOMEM;
+
+	p->mii->name = DRV_NAME " mdio";
+	p->mii->priv = p;
+	p->mii->parent = p->dev;
+	p->mii->read = nat_mdio_read;
+	p->mii->write = nat_mdio_write;
+	snprintf(p->mii->id, MII_BUS_ID_SIZE, "%s", dev_name(p->dev));
+
+	np = of_get_child_by_name(p->dev->of_node, "mdio");
+	ret = devm_of_mdiobus_register(p->dev, p->mii, np);
+	of_node_put(np);
+	return ret;
+}
+
+/* ---- hardware bring-up ---- */
+
+static void nat_pads_init(struct nat_priv *p)
+{
+	/* RGMII0_VDD is 1.8 V on the W2 (schematic page 1) */
+	regmap_write(p->sb2, SB2_MUXPAD_RG0, SB2_MUXPAD_RGMII);
+	regmap_write(p->sb2, SB2_PFUNC_RG0, 0);			/* fast slew */
+	regmap_write(p->sb2, SB2_PFUNC_RG1, 0x44444444);	/* TXD 4 mA */
+	regmap_write(p->sb2, SB2_PFUNC_RG2, 0x24444444);	/* RXD 4 mA */
+}
+
+static int nat_power_on(struct nat_priv *p)
+{
+	int ret;
+
+	/*
+	 * Realtek's order: clock on and off, release the reset, clock on,
+	 * so that the reset is seen by a clocked block.
+	 */
+	ret = reset_control_assert(p->rst);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(p->clk);
+	if (ret)
+		return ret;
+	udelay(10);
+	clk_disable(p->clk);
+	ret = reset_control_deassert(p->rst);
+	if (ret) {
+		clk_unprepare(p->clk);
+		return ret;
+	}
+	clk_enable(p->clk);
+	usleep_range(1000, 2000);
+	return 0;
+}
+
+static void nat_power_off(struct nat_priv *p)
+{
+	reset_control_assert(p->rst);
+	clk_disable_unprepare(p->clk);
+}
+
+static void nat_dump(struct nat_priv *p, const char *when)
+{
+	dev_dbg(p->dev,
+		 "%s: CPUICR %08x CPUICR1 %08x MSCR %08x SWTCR0 %08x PITCR %08x PCRP5 %08x PSRP5 %08x P5GMIICR %08x CPUIMCR %08x QNUMCR %08x\n",
+		 when, nat_r(p, CPUICR), nat_r(p, CPUICR1), nat_r(p, MSCR),
+		 nat_r(p, SWTCR0), nat_r(p, PITCR), nat_r(p, PCRP(NAT_PORT)),
+		 nat_r(p, PSRP(NAT_PORT)), nat_r(p, P5GMIICR),
+		 nat_r(p, CPUIMCR), nat_r(p, QNUMCR));
+}
+
+static int nat_switch_init(struct nat_priv *p, const u8 *mac)
+{
+	int ret;
+
+	nat_dump(p, "after reset");
+
+	/* EEE off */
+	nat_w(p, EEECR, 0);
+	nat_w(p, EEEABICR1, 0);
+
+	/* L2 only: no ACL, no routing, no NAPT, no spanning tree */
+	nat_rmw(p, MSCR, MSCR_STP | MSCR_IN_ACL | MSCR_OUT_ACL | MSCR_L3 |
+			 MSCR_L4, MSCR_L2);
+	nat_rmw(p, RMACR, RMACR_BPDU, 0);
+	nat_rmw(p, TEACR, TEACR_L2_AGING_OFF, TEACR_L4_AGING_OFF);
+
+	ret = nat_tbl_clear(p, TBL_NETIF, NETIF_ENTRIES, 5);
+	if (!ret)
+		ret = nat_tbl_clear(p, TBL_VLAN, VLAN_ENTRIES, 3);
+	if (!ret)
+		ret = nat_tbl_clear(p, TBL_L2, L2_ENTRIES, 2);
+	if (ret) {
+		dev_err(p->dev, "switch table access timed out\n");
+		return ret;
+	}
+
+	/* interfaces are chosen by VLAN; frames for us go to the CPU */
+	nat_rmw(p, SWTCR0, SWTCR0_NETIF_DECISION | SWTCR0_WAN_ROUTE,
+		SWTCR0_NAPTF2CPU);
+	nat_rmw(p, FFCR, FFCR_UNKNOWN_UC2CPU, FFCR_UNKNOWN_MC2CPU);
+	nat_rmw(p, VCR0, VCR0_INGRESS_FILTER, 0);
+	nat_rmw(p, CSCR, CSCR_ERR_ALLOW, CSCR_L3_RECALC | CSCR_L4_RECALC);
+
+	/* Realtek's per-port flow control thresholds (reset: 0x14c/0x146) */
+	nat_w(p, PBFCR(NAT_PORT), FIELD_PREP(PBFCR_FCON, 0x1ac) |
+				  FIELD_PREP(PBFCR_FCOFF, 0x1a6));
+	nat_w(p, PBFCR(6), FIELD_PREP(PBFCR_FCON, 0x1ac) |
+			   FIELD_PREP(PBFCR_FCOFF, 0x1a6));
+
+	/* one output queue per port, every CPU queue into RX ring 0 */
+	nat_w(p, QNUMCR, 0);
+	nat_w(p, CPUQDM0, 0);
+	nat_w(p, CPUQDM2, 0);
+	nat_w(p, CPUQDM4, 0);
+
+	/* port 5: RGMII to the external PHY */
+	nat_rmw(p, PITCR, PITCR_P5_TYPE, 0);
+	nat_rmw(p, P5GMIICR, GMIICR_MODE, GMIICR_CONF_DONE);
+	/*
+	 * Out of reset the MAC manages the PHY itself: it polls it at
+	 * ExtPHYID and advertises (and renegotiates) the abilities in
+	 * PCR[22:16]. phylib owns the PHY here, so the MAC runs in force mode
+	 * without link polling, its link state set from nat_adjust_link().
+	 * Left in charge, it fought phylib's advertisement: the link dropped
+	 * a second after coming up and renegotiated down to 100 Mbps.
+	 * ExtPHYID must still be the PHY's address: the MDIO controller sends
+	 * a command to the pins of the port whose ExtPHYID matches it.
+	 */
+	nat_rmw(p, PCRP(NAT_PORT), PCR_FORCE_MASK | PCR_STP_STATE,
+		FIELD_PREP(PCR_EXT_PHY_ID, p->phy_addr) | PCR_FORCE_MODE |
+		FIELD_PREP(PCR_STP_STATE, PCR_STP_FORWARDING) |
+		PCR_MAC_NORMAL | PCR_PHY_IF_EN);
+
+	/* one VLAN: port 5, untagged, and its interface with our address */
+	ret = nat_set_vlan(p, NAT_VID, BIT(NAT_PORT), BIT(NAT_PORT), 0);
+	if (!ret)
+		ret = nat_set_netif(p, 0, NAT_VID, mac, ETH_DATA_LEN);
+	if (ret)
+		return ret;
+	nat_rmw(p, PVCR(NAT_PORT), PVCR_PVID(NAT_PORT),
+		NAT_PORT & 1 ? NAT_VID << 16 : NAT_VID);
+
+	/*
+	 * The NIC side: the six-word descriptor format (the reset default is
+	 * the older RTL8198C one), little-endian, TX gather as Realtek runs it.
+	 */
+	nat_rmw(p, CPUICR1, CPUICR1_PKT_HDR_TYPE,
+		FIELD_PREP(CPUICR1_PKT_HDR_TYPE, PKT_HDR_NEW_DESC) |
+		CPUICR1_TX_GATHER | CPUICR1_LITTLE_ENDIAN |
+		CPUICR1_TXRX_DIV_LX | CPUICR1_TSO_ID_SEL);
+	nat_rmw(p, MACCTRL1, 0, MACCTRL1_CMAC_CLK_SEL);
+
+	nat_dump(p, "configured");
+	return 0;
+}
+
+/* ---- rings ---- */
+
+static int nat_ring_alloc(struct nat_priv *p, struct nat_ring *r,
+			  unsigned int count)
+{
+	r->count = count;
+	r->head = r->tail = 0;
+	r->desc = dma_alloc_coherent(p->dev, count * sizeof(*r->desc),
+				     &r->dma, GFP_KERNEL);
+	if (!r->desc)
+		return -ENOMEM;
+	r->buf = kcalloc(count, sizeof(*r->buf), GFP_KERNEL);
+	if (!r->buf) {
+		dma_free_coherent(p->dev, count * sizeof(*r->desc), r->desc,
+				  r->dma);
+		r->desc = NULL;
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+static void nat_ring_free(struct nat_priv *p, struct nat_ring *r,
+			  enum dma_data_direction dir)
+{
+	unsigned int i;
+
+	if (!r->desc)
+		return;
+	for (i = 0; i < r->count; i++) {
+		struct nat_buf *b = &r->buf[i];
+
+		if (b->skb) {
+			dma_unmap_single(p->dev, b->dma, b->len, dir);
+			dev_kfree_skb_any(b->skb);
+		}
+	}
+	kfree(r->buf);
+	dma_free_coherent(p->dev, r->count * sizeof(*r->desc), r->desc, r->dma);
+	r->desc = NULL;
+	r->buf = NULL;
+}
+
+static int nat_rx_refill(struct nat_priv *p, struct nat_ring *r,
+			 unsigned int i)
+{
+	struct nat_desc *d = &r->desc[i];
+	struct nat_buf *b = &r->buf[i];
+	struct sk_buff *skb;
+	dma_addr_t dma;
+
+	skb = netdev_alloc_skb_ip_align(p->ndev, NAT_RX_BUF);
+	if (!skb)
+		return -ENOMEM;
+	dma = dma_map_single(p->dev, skb->data, NAT_RX_BUF, DMA_FROM_DEVICE);
+	if (dma_mapping_error(p->dev, dma)) {
+		dev_kfree_skb_any(skb);
+		return -ENOMEM;
+	}
+	b->skb = skb;
+	b->dma = dma;
+	b->len = NAT_RX_BUF;
+	d->addr = cpu_to_le32(dma);
+	return 0;
+}
+
+static void nat_rx_give(struct nat_ring *r, unsigned int i)
+{
+	struct nat_desc *d = &r->desc[i];
+	u32 o1 = DESC_OWN | FIELD_PREP(RX1_BUF_SIZE, NAT_RX_BUF);
+
+	if (i == r->count - 1)
+		o1 |= DESC_EOR;
+	d->opts2 = 0;
+	d->opts3 = 0;
+	d->opts4 = 0;
+	d->opts5 = cpu_to_le32(RX5_OWN2);
+	dma_wmb();
+	d->opts1 = cpu_to_le32(o1);
+}
+
+static void nat_rings_free(struct nat_priv *p)
+{
+	unsigned int i;
+
+	for (i = 0; i < NAT_RX_RINGS; i++)
+		nat_ring_free(p, &p->rx[i], DMA_FROM_DEVICE);
+	for (i = 0; i < NAT_TX_RINGS; i++)
+		nat_ring_free(p, &p->tx[i], DMA_TO_DEVICE);
+}
+
+static int nat_rings_init(struct nat_priv *p)
+{
+	static const u32 tx_cdp[NAT_TX_RINGS] = {
+		CPUTPDCR0, CPUTPDCR1, CPUTPDCR2, CPUTPDCR3,
+	};
+	unsigned int i, j;
+	int ret;
+
+	/* the descriptors carry 32-bit addresses */
+	for (i = 0; i < NAT_RX_RINGS; i++) {
+		struct nat_ring *r = &p->rx[i];
+
+		ret = nat_ring_alloc(p, r, i ? NAT_SPARE_DESCS : NAT_RX_DESCS);
+		if (ret)
+			goto err;
+		if (i) {
+			/*
+			 * Rings 1-5 get no traffic (CPUQDM maps every queue to
+			 * ring 0). Leave them owned by the CPU, without buffers,
+			 * so that a stray frame finds no memory to write.
+			 */
+			r->desc[r->count - 1].opts1 = cpu_to_le32(DESC_EOR);
+		} else {
+			for (j = 0; j < r->count; j++) {
+				ret = nat_rx_refill(p, r, j);
+				if (ret)
+					goto err;
+				nat_rx_give(r, j);
+			}
+		}
+		nat_w(p, CPURPDCR(i), r->dma);
+	}
+
+	for (i = 0; i < NAT_TX_RINGS; i++) {
+		struct nat_ring *r = &p->tx[i];
+
+		ret = nat_ring_alloc(p, r, i ? NAT_SPARE_DESCS : NAT_TX_DESCS);
+		if (ret)
+			goto err;
+		r->desc[r->count - 1].opts1 = cpu_to_le32(DESC_EOR);
+		nat_w(p, tx_cdp[i], r->dma);
+	}
+	/* ring 0's end is given by its length rather than by EOR */
+	nat_w(p, DMA_CR1, (p->tx[0].count - 1) * sizeof(struct nat_desc));
+	nat_w(p, DMA_CR4, DMA_CR4_TX0_TAIL_AWARE);
+	return 0;
+
+err:
+	nat_rings_free(p);
+	return ret;
+}
+
+/* ---- data path ---- */
+
+static unsigned int nat_cdp_index(struct nat_priv *p, struct nat_ring *r,
+				  u32 reg)
+{
+	u32 cdp = nat_r(p, reg);
+
+	return (cdp - (u32)r->dma) / sizeof(struct nat_desc);
+}
+
+static void nat_tx_reclaim(struct nat_priv *p)
+{
+	struct nat_ring *r = &p->tx[0];
+	struct net_device *ndev = p->ndev;
+	unsigned int hw, done = 0, bytes = 0;
+
+	spin_lock(&p->tx_lock);
+	hw = nat_cdp_index(p, r, CPUTPDCR0);
+	while (r->tail != hw && r->tail != r->head) {
+		struct nat_buf *b = &r->buf[r->tail];
+
+		dma_unmap_single(p->dev, b->dma, b->len, DMA_TO_DEVICE);
+		bytes += b->skb->len;
+		napi_consume_skb(b->skb, NAT_NAPI_WEIGHT);
+		b->skb = NULL;
+		done++;
+		r->tail = (r->tail + 1) % r->count;
+	}
+	if (done) {
+		ndev->stats.tx_packets += done;
+		ndev->stats.tx_bytes += bytes;
+		if (netif_queue_stopped(ndev))
+			netif_wake_queue(ndev);
+	}
+	spin_unlock(&p->tx_lock);
+}
+
+static netdev_tx_t nat_start_xmit(struct sk_buff *skb, struct net_device *ndev)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	struct nat_ring *r = &p->tx[0];
+	unsigned int i, next, len;
+	struct nat_desc *d;
+	dma_addr_t dma;
+
+	if (skb_put_padto(skb, ETH_ZLEN)) {
+		ndev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
+
+	spin_lock_bh(&p->tx_lock);
+	i = r->head;
+	next = (i + 1) % r->count;
+	if (next == r->tail) {
+		netif_stop_queue(ndev);
+		spin_unlock_bh(&p->tx_lock);
+		return NETDEV_TX_BUSY;
+	}
+
+	dma = dma_map_single(p->dev, skb->data, skb->len, DMA_TO_DEVICE);
+	if (dma_mapping_error(p->dev, dma)) {
+		spin_unlock_bh(&p->tx_lock);
+		dev_kfree_skb_any(skb);
+		ndev->stats.tx_dropped++;
+		return NETDEV_TX_OK;
+	}
+	r->buf[i].skb = skb;
+	r->buf[i].dma = dma;
+	r->buf[i].len = skb->len;
+
+	/* lengths include the FCS the MAC appends */
+	len = skb->len + ETH_FCS_LEN;
+	d = &r->desc[i];
+	d->addr = cpu_to_le32(dma);
+	d->opts2 = cpu_to_le32(FIELD_PREP(TX2_MLEN, len));
+	d->opts3 = cpu_to_le32(FIELD_PREP(TX3_DVLAN, NAT_VID));
+	/* straight out of port 5, no lookup */
+	d->opts4 = cpu_to_le32(FIELD_PREP(TX4_DPORTS, BIT(NAT_PORT)));
+	d->opts5 = 0;
+	dma_wmb();
+	d->opts1 = cpu_to_le32(DESC_OWN | DESC_FS | DESC_LS |
+			       FIELD_PREP(TX1_PH_LEN, len));
+	r->head = next;
+	skb_tx_timestamp(skb);
+
+	/* writel() also drains SB2 on RTD129x, so the descriptor is out */
+	nat_rmw(p, CPUICR, 0, CPUICR_TXFD);
+
+	if ((r->head + 1) % r->count == r->tail)
+		netif_stop_queue(ndev);
+	spin_unlock_bh(&p->tx_lock);
+	return NETDEV_TX_OK;
+}
+
+static int nat_rx(struct nat_priv *p, int budget)
+{
+	struct nat_ring *r = &p->rx[0];
+	struct net_device *ndev = p->ndev;
+	int done = 0;
+
+	while (done < budget) {
+		unsigned int i = r->head, len;
+		struct nat_desc *d = &r->desc[i];
+		struct nat_buf *b = &r->buf[i];
+		struct sk_buff *skb, *fresh;
+		dma_addr_t dma;
+		u32 o2, o5;
+
+		/* the core clears both owner bits when it is done */
+		o5 = le32_to_cpu(d->opts5);
+		if ((le32_to_cpu(d->opts1) & DESC_OWN) || (o5 & RX5_OWN2))
+			break;
+		dma_rmb();
+		o2 = le32_to_cpu(d->opts2);
+		o5 = le32_to_cpu(d->opts5);
+
+		len = FIELD_GET(RX2_LEN, o2);
+		if (len < ETH_HLEN + ETH_FCS_LEN || len > NAT_RX_BUF ||
+		    !(o5 & RX5_L3CSOK) || !(o5 & RX5_L4CSOK)) {
+			ndev->stats.rx_errors++;
+			goto give;
+		}
+		len -= ETH_FCS_LEN;
+
+		/* a new buffer first; without one, drop and reuse the old */
+		fresh = netdev_alloc_skb_ip_align(ndev, NAT_RX_BUF);
+		if (!fresh) {
+			ndev->stats.rx_dropped++;
+			goto give;
+		}
+		dma = dma_map_single(p->dev, fresh->data, NAT_RX_BUF,
+				     DMA_FROM_DEVICE);
+		if (dma_mapping_error(p->dev, dma)) {
+			dev_kfree_skb_any(fresh);
+			ndev->stats.rx_dropped++;
+			goto give;
+		}
+
+		skb = b->skb;
+		dma_unmap_single(p->dev, b->dma, b->len, DMA_FROM_DEVICE);
+		b->skb = fresh;
+		b->dma = dma;
+		b->len = NAT_RX_BUF;
+		d->addr = cpu_to_le32(dma);
+
+		skb_put(skb, len);
+		skb->protocol = eth_type_trans(skb, ndev);
+		ndev->stats.rx_packets++;
+		ndev->stats.rx_bytes += len;
+		napi_gro_receive(&p->napi, skb);
+give:
+		nat_rx_give(r, i);
+		r->head = (i + 1) % r->count;
+		done++;
+	}
+
+	/* clear "descriptors ran out" so that reception resumes */
+	nat_w(p, CPUIISR, CPUII_RX_RUNOUT_ALL);
+	return done;
+}
+
+#define NAT_IRQS (CPUII_RX_DONE_ALL | CPUII_RX_RUNOUT_ALL | CPUII_TX_ALL_DONE0)
+
+static int nat_poll(struct napi_struct *napi, int budget)
+{
+	struct nat_priv *p = container_of(napi, struct nat_priv, napi);
+	int done;
+
+	nat_tx_reclaim(p);
+	done = nat_rx(p, budget);
+	if (done < budget && napi_complete_done(napi, done))
+		nat_w(p, CPUIIMR, NAT_IRQS);
+	return done;
+}
+
+static irqreturn_t nat_isr(int irq, void *data)
+{
+	struct nat_priv *p = data;
+	u32 st = nat_r(p, CPUIISR) & nat_r(p, CPUIIMR);
+
+	if (!st)
+		return IRQ_NONE;
+	nat_w(p, CPUIISR, st);
+	nat_w(p, CPUIIMR, 0);
+	napi_schedule(&p->napi);
+	return IRQ_HANDLED;
+}
+
+/* ---- netdev ---- */
+
+static void nat_adjust_link(struct net_device *ndev)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	struct phy_device *phy = ndev->phydev;
+	u32 val = FIELD_PREP(PCR_EXT_PHY_ID, p->phy_addr) | PCR_FORCE_MODE;
+	bool tx_pause, rx_pause;
+
+	if (phy->link) {
+		val |= PCR_FORCE_LINK;
+		switch (phy->speed) {
+		case SPEED_1000:
+			val |= FIELD_PREP(PCR_FORCE_SPEED, 2);
+			break;
+		case SPEED_100:
+			val |= FIELD_PREP(PCR_FORCE_SPEED, 1);
+			break;
+		}
+		if (phy->duplex == DUPLEX_FULL)
+			val |= PCR_FORCE_DUPLEX;
+		phy_get_pause(phy, &tx_pause, &rx_pause);
+		if (tx_pause)
+			val |= FIELD_PREP(PCR_PAUSE, BIT(0));
+		if (rx_pause)
+			val |= FIELD_PREP(PCR_PAUSE, BIT(1));
+	}
+	nat_rmw(p, PCRP(NAT_PORT), PCR_FORCE_MASK, val);
+
+	if (phy->link != p->last_link) {
+		p->last_link = phy->link;
+		phy_print_status(phy);
+	}
+}
+
+static int nat_open(struct net_device *ndev)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	struct phy_device *phy;
+	int ret;
+
+	ret = nat_rings_init(p);
+	if (ret)
+		return ret;
+
+	phy = of_phy_connect(ndev, p->phy_np, nat_adjust_link, 0, p->phy_mode);
+	if (!phy) {
+		ret = -ENODEV;
+		goto err_rings;
+	}
+	p->last_link = -1;
+	/*
+	 * No EEE: the MAC has it off (EEECR), and with the RTL8211F
+	 * advertising it the link dropped once, a second after coming up.
+	 * No pause either: with flow control negotiated, TCP stalled under
+	 * load and the loop test lost and corrupted frames, with no PAUSE
+	 * frame counted either way (docs/second-ethernet.md).
+	 */
+	phy_disable_eee(phy);
+
+	ret = request_irq(p->irq, nat_isr, 0, ndev->name, p);
+	if (ret)
+		goto err_phy;
+
+	napi_enable(&p->napi);
+	nat_w(p, CPUICR, CPUICR_TXCMD | CPUICR_RXCMD | CPUICR_BURST_128W |
+			 CPUICR_MBUF_2048);
+	/* writing the burst size resets the FIFO marks */
+	nat_rmw(p, DMA_CR0, DMA_CR0_FIFO_MASK, DMA_CR0_FIFO_MARKS);
+	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
+	nat_w(p, CPUIIMR, NAT_IRQS);
+	nat_w(p, SSIR, SSIR_TRXRDY);
+
+	phy_start(phy);
+	netif_start_queue(ndev);
+	nat_dump(p, "open");
+	return 0;
+
+err_phy:
+	phy_disconnect(phy);
+err_rings:
+	nat_rings_free(p);
+	return ret;
+}
+
+static void nat_hw_stop(struct nat_priv *p)
+{
+	nat_w(p, CPUIIMR, 0);
+	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
+	nat_w(p, CPUICR, 0);
+	nat_w(p, SSIR, 0);
+}
+
+static int nat_stop(struct net_device *ndev)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+
+	netif_stop_queue(ndev);
+	phy_stop(ndev->phydev);
+	napi_disable(&p->napi);
+	nat_hw_stop(p);
+	free_irq(p->irq, p);
+	phy_disconnect(ndev->phydev);
+	/* the core may still be fetching; let it see the stop first */
+	usleep_range(1000, 2000);
+	nat_rings_free(p);
+	return 0;
+}
+
+static void nat_tx_timeout(struct net_device *ndev, unsigned int txq)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	struct nat_ring *r = &p->tx[0];
+
+	netdev_err(ndev, "tx timeout: head %u tail %u hw %u CPUICR %08x CPUIISR %08x PSRP5 %08x\n",
+		   r->head, r->tail, nat_cdp_index(p, r, CPUTPDCR0),
+		   nat_r(p, CPUICR), nat_r(p, CPUIISR),
+		   nat_r(p, PSRP(NAT_PORT)));
+}
+
+static const struct net_device_ops nat_netdev_ops = {
+	.ndo_open		= nat_open,
+	.ndo_stop		= nat_stop,
+	.ndo_start_xmit		= nat_start_xmit,
+	.ndo_tx_timeout		= nat_tx_timeout,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_eth_ioctl		= phy_do_ioctl_running,
+};
+
+/* ---- debugfs: rings, registers and MIB counters, for bring-up ---- */
+
+#define MIB_IN(port, off)	(0x161100 + (port) * 0x80 + (off))
+#define MIB_OUT(port, off)	(0x161800 + (port) * 0x80 + (off))
+
+static void nat_dbg_ring(struct seq_file *m, struct nat_priv *p,
+			 const char *name, struct nat_ring *r, u32 cdp_reg,
+			 unsigned int max)
+{
+	unsigned int i;
+
+	if (!r->desc) {
+		seq_printf(m, "%s: not allocated\n", name);
+		return;
+	}
+	seq_printf(m, "%s: dma %08x count %u head %u tail %u cdp %08x\n", name,
+		   (u32)r->dma, r->count, r->head, r->tail, nat_r(p, cdp_reg));
+	for (i = 0; i < r->count && i < max; i++) {
+		struct nat_desc *d = &r->desc[i];
+
+		seq_printf(m, "  [%3u] %08x %08x %08x %08x %08x %08x\n", i,
+			   le32_to_cpu(d->opts1), le32_to_cpu(d->addr),
+			   le32_to_cpu(d->opts2), le32_to_cpu(d->opts3),
+			   le32_to_cpu(d->opts4), le32_to_cpu(d->opts5));
+	}
+}
+
+static int nat_dbg_show(struct seq_file *m, void *v)
+{
+	static const struct { const char *name; u32 reg; } regs[] = {
+		{ "CPUICR", CPUICR }, { "CPUICR1", CPUICR1 },
+		{ "CPUIIMR", CPUIIMR }, { "CPUIISR", CPUIISR },
+		{ "DMA_CR0", DMA_CR0 }, { "DMA_CR1", DMA_CR1 },
+		{ "DMA_CR4", DMA_CR4 }, { "MSCR", MSCR }, { "SWTCR0", SWTCR0 },
+		{ "FFCR", FFCR }, { "PCRP5", PCRP(NAT_PORT) },
+		{ "PSRP5", PSRP(NAT_PORT) }, { "P5GMIICR", P5GMIICR },
+		{ "SSIR", SSIR }, { "PVCR2", PVCR(NAT_PORT) },
+	};
+	static const struct { const char *name; u32 off; } mib_in[] = {
+		{ "octets", 0x0c }, { "ucast", 0x08 }, { "mcast", 0x3c },
+		{ "bcast", 0x40 }, { "discard", 0x44 }, { "drop", 0x48 },
+		{ "fcs_err", 0x4c }, { "rxdv", 0x5c }, { "qm_discard", 0x60 },
+	}, mib_out[] = {
+		{ "octets", 0x00 }, { "ucast", 0x08 }, { "mcast", 0x0c },
+		{ "bcast", 0x10 },
+	};
+	struct nat_priv *p = m->private;
+	unsigned int i, port;
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++)
+		seq_printf(m, "%-9s %08x\n", regs[i].name, nat_r(p, regs[i].reg));
+	for (port = NAT_PORT; port <= NAT_PORT + 1; port++) {
+		seq_printf(m, "%s in: ", port == NAT_PORT ? "port 5" : "cpu   ");
+		for (i = 0; i < ARRAY_SIZE(mib_in); i++)
+			seq_printf(m, " %s %u", mib_in[i].name,
+				   nat_r(p, MIB_IN(port, mib_in[i].off)));
+		seq_printf(m, "\n%s out:", port == NAT_PORT ? "port 5" : "cpu   ");
+		for (i = 0; i < ARRAY_SIZE(mib_out); i++)
+			seq_printf(m, " %s %u", mib_out[i].name,
+				   nat_r(p, MIB_OUT(port, mib_out[i].off)));
+		seq_puts(m, "\n");
+	}
+	nat_dbg_ring(m, p, "rx0", &p->rx[0], CPURPDCR(0), 8);
+	nat_dbg_ring(m, p, "tx0", &p->tx[0], CPUTPDCR0, 8);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(nat_dbg);
+
+/* ---- probe ---- */
+
+static int nat_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct net_device *ndev;
+	struct nat_priv *p;
+	struct resource *res;
+	u8 mac[ETH_ALEN];
+	int ret;
+
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return ret;
+
+	ndev = devm_alloc_etherdev(dev, sizeof(*p));
+	if (!ndev)
+		return -ENOMEM;
+	SET_NETDEV_DEV(ndev, dev);
+	p = netdev_priv(ndev);
+	p->dev = dev;
+	p->ndev = ndev;
+	spin_lock_init(&p->tx_lock);
+	platform_set_drvdata(pdev, p);
+
+	p->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	if (IS_ERR(p->base))
+		return PTR_ERR(p->base);
+	p->phys = res->start;
+
+	p->irq = platform_get_irq(pdev, 0);
+	if (p->irq < 0)
+		return p->irq;
+
+	p->sb2 = syscon_regmap_lookup_by_phandle(dev->of_node, "realtek,sb2");
+	if (IS_ERR(p->sb2))
+		return dev_err_probe(dev, PTR_ERR(p->sb2), "no sb2 syscon\n");
+
+	p->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(p->clk))
+		return dev_err_probe(dev, PTR_ERR(p->clk), "no clock\n");
+	p->rst = devm_reset_control_get_exclusive(dev, NULL);
+	if (IS_ERR(p->rst))
+		return dev_err_probe(dev, PTR_ERR(p->rst), "no reset\n");
+
+	ret = of_get_phy_mode(dev->of_node, &p->phy_mode);
+	if (ret)
+		return dev_err_probe(dev, ret, "no phy-mode\n");
+	p->phy_np = of_parse_phandle(dev->of_node, "phy-handle", 0);
+	if (!p->phy_np)
+		return dev_err_probe(dev, -ENODEV, "no phy-handle\n");
+	ret = of_property_read_u32(p->phy_np, "reg", &p->phy_addr);
+	if (ret || p->phy_addr >= PHY_MAX_ADDR) {
+		of_node_put(p->phy_np);
+		return dev_err_probe(dev, -EINVAL, "bad PHY address\n");
+	}
+
+	ret = of_get_ethdev_address(dev->of_node, ndev);
+	if (ret)
+		eth_hw_addr_random(ndev);
+	ether_addr_copy(mac, ndev->dev_addr);
+
+	nat_pads_init(p);
+	ret = nat_power_on(p);
+	if (ret)
+		goto err_np;
+	ret = nat_switch_init(p, mac);
+	if (ret)
+		goto err_power;
+	ret = nat_mdio_init(p);
+	if (ret)
+		goto err_power;
+
+	ndev->netdev_ops = &nat_netdev_ops;
+	ndev->watchdog_timeo = 5 * HZ;
+	ndev->min_mtu = ETH_MIN_MTU;
+	ndev->max_mtu = ETH_DATA_LEN;
+	netif_napi_add_weight(ndev, &p->napi, nat_poll, NAT_NAPI_WEIGHT);
+
+	ret = register_netdev(ndev);
+	if (ret)
+		goto err_napi;
+
+	p->dbg = debugfs_create_file(DRV_NAME, 0400, NULL, p, &nat_dbg_fops);
+	netdev_info(ndev, "port %d, %pM, irq %d\n", NAT_PORT, ndev->dev_addr,
+		    p->irq);
+	return 0;
+
+err_napi:
+	netif_napi_del(&p->napi);
+err_power:
+	nat_power_off(p);
+err_np:
+	of_node_put(p->phy_np);
+	return ret;
+}
+
+static void nat_remove(struct platform_device *pdev)
+{
+	struct nat_priv *p = platform_get_drvdata(pdev);
+
+	debugfs_remove(p->dbg);
+	unregister_netdev(p->ndev);
+	netif_napi_del(&p->napi);
+	nat_power_off(p);
+	of_node_put(p->phy_np);
+}
+
+static const struct of_device_id nat_of_match[] = {
+	{ .compatible = "realtek,rtd1295-hwnat" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, nat_of_match);
+
+static struct platform_driver nat_driver = {
+	.probe = nat_probe,
+	.remove = nat_remove,
+	.driver = {
+		.name = DRV_NAME,
+		.of_match_table = nat_of_match,
+	},
+};
+module_platform_driver(nat_driver);
+
+MODULE_DESCRIPTION("Realtek RTD1295 hardware NAT switch core as a NIC");
+MODULE_LICENSE("GPL");
