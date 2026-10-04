@@ -52,7 +52,14 @@ What it costs: the eMMC DMAC fetched stale descriptors and corrupted
 memory. `eth0`'s transmitter wedged under load, with nothing in the logs.
 See `../bpiw2_pikvm/docs/09-mainline-bringup.md` §14 and §21.
 
-What to do: after writing descriptors, and buffers the device will read,
+Since `8ad0763` in the PiKVM repository (patch 0018), the kernel does
+this for every driver, as Realtek's did: `wmb()` and every `writel()`
+drain SB2 on RTD129x. A driver using plain `writel()` for its doorbell is
+covered. `writel_relaxed()` is **not**: put a `wmb()` before a relaxed
+doorbell. To A/B a suspected SB2 problem, switch it with
+`/sys/kernel/debug/rtd_sb2_sync` (or `rtd_sb2_sync=off` at boot).
+
+Before that commit, the advice was this: after writing descriptors, and buffers the device will read,
 and before the doorbell, write the SB2 sync register. Get it through the
 `realtek,sb2` syscon (`syscon_regmap_lookup_by_phandle(np, "realtek,sb2")`,
 then `regmap_write(sb2, 0x20, 0)`). `emmc-rtd129x.c` and `r8169soc.c` in
