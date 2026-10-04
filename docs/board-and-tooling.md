@@ -84,7 +84,18 @@ rebuild here.
 
 ### Device tree
 
-A new driver needs its node in the board DTS,
+**Without touching the board's boot partition**: apply the node as a
+runtime overlay from a small module (the kernel has `CONFIG_OF_OVERLAY`).
+The base DTB has no `__symbols__`, so the overlay cannot use labels; it
+carries the running board's phandles instead, read from
+`/proc/device-tree/.../phandle`. `drivers/nat-eth/` does this:
+`nat-overlay.dtso.in` (template), `scripts/build-nat-overlay.sh` (fills in
+the phandles), `nat-overlay.c` (applies it with `of_overlay_fdt_apply()`
+on insmod, removes it on rmmod; kbuild turns the `.dtso` into a
+`.dtbo.o`). The platform bus binds the driver to the new node as soon as
+both are loaded. Reuse the pattern for the next driver.
+
+For the image, the node goes into the board DTS,
 `../bpiw2_pikvm/kernel/mainline/rtd1296-bananapi-w2.dts`. Keep the node in
 `dts/<name>.dtsi` here. While testing, paste it into the board DTS as a
 local, uncommitted change (or on a branch of that repository), then:
@@ -108,6 +119,12 @@ Kconfig/Makefile lines, the copy line in `scripts/build-kernel-mainline.sh`,
 the option in `kernel/mainline/bpiw2.config`, the node in the board DTS, and
 a section in its docs/09 and docs/10. That happens on its `kernel-6.18`
 branch, with the user's agreement.
+
+### Testing on the board
+
+`scripts/board/` holds small Python tools that run on the board (the image
+has no tcpdump, ethtool or iperf3): an MMIO peek, a PHY register reader, a
+frame loop test between two NICs, a TCP throughput test. See its README.
 
 ## Where the reference material is
 

@@ -9,6 +9,11 @@ modules.order
 Module.symvers
 .tmp_versions/
 *.dtb
+*.dtbo
+*.dtbo.S
+.*.tmp
+# generated from nat-overlay.dtso.in with the board's phandles
+/drivers/nat-eth/nat-overlay.dtso
 /build/
 
 # Never commit credentials or vendor material that is not ours to share
