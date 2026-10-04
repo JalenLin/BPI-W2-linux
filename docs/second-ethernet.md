@@ -343,10 +343,16 @@ u-boot's environment `ethaddr` through the `u-boot,env` nvmem layout).
 That needs a per-board address stored somewhere first: the user's call,
 as it means writing the boot loader's environment or a partition.
 
+**Decision (2026-10-05): for now the kernel keeps a random address**,
+marked `NET_ADDR_RANDOM`, as mainline does for boards with no stored
+address; the distribution makes it stable (OpenWrt's own configuration,
+systemd's `MACAddressPolicy=persistent` on Ubuntu). The `mac-base` way is
+for later, once the boot loader and distribution are chosen.
+
 ## Open
 
-- **MAC address**: random on every load until a per-board address is
-  stored somewhere the DT can reach (see "MAC address").
+- MAC address: random by decision for now; `mac-base` from a per-board
+  store later (see "MAC address").
 - Interrupt mitigation (`CPUIMCR`, `CPUIMTTR*`, `CPUIMPNTR*`; Realtek uses
   400 us / 32 packets): ~830k interrupts for 2.8 M packets now.
 - RX checksum: the core reports L3/L4 checksum OK; the driver still leaves
