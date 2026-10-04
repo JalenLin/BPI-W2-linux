@@ -1,0 +1,4 @@
+# The second RJ45 takes the on-board Ethernet's MAC address plus one;
+# see /usr/local/bin/bpikvm-nat-eth-mac. networkd configures the interface
+# only after this has run.
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="rtd1295-hwnat", RUN+="/usr/local/bin/bpikvm-nat-eth-mac %k"

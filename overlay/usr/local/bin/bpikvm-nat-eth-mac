@@ -1,0 +1,36 @@
+#!/bin/sh
+# Give the second RJ45 (rtd1295-hwnat, the NAT switch's port 5) the MAC
+# address of the first one plus one, as Realtek's own driver numbers them
+# (the low three bytes count up, with carry, and wrap).
+#
+# The on-board Ethernet has no address of its own: r8169soc starts with a
+# random one and udev replaces it with one derived from /etc/machine-id
+# (/etc/systemd/network/10-bpiw2-eth0.link). So wait until that has
+# happened -- addr_assign_type leaves 1 (random) -- and give up after
+# five seconds, leaving the random address in place.
+#
+# Run by 80-bpiw2-nat-eth-mac.rules as RUN+="... %k".
+set -eu
+PATH=/usr/bin:/bin
+
+dev="$1"
+base=
+for n in /sys/bus/platform/devices/98016000.ethernet/net/*; do
+	[ -e "$n/address" ] && base="$n" && break
+done
+[ -n "$base" ] || { echo "nat-eth-mac: no on-board Ethernet" >&2; exit 0; }
+
+i=0
+while [ "$(cat "$base/addr_assign_type")" = 1 ]; do
+	i=$((i + 1))
+	[ "$i" -le 50 ] || { echo "nat-eth-mac: $(basename "$base") still random" >&2; exit 0; }
+	sleep 0.1
+done
+
+mac="$(cat "$base/address")"
+hi="${mac%:*:*:*}"
+lo="$(echo "${mac#*:*:*:}" | tr -d :)"
+lo=$(( (0x$lo + 1) & 0xffffff ))
+new="$(printf '%s:%02x:%02x:%02x' "$hi" $((lo >> 16)) $(((lo >> 8) & 0xff)) $((lo & 0xff)))"
+
+ip link set dev "$dev" address "$new"

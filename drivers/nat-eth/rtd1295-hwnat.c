@@ -1005,12 +1005,30 @@ static void nat_tx_timeout(struct net_device *ndev, unsigned int txq)
 		   nat_r(p, PSRP(NAT_PORT)));
 }
 
+static int nat_set_mac_address(struct net_device *ndev, void *addr)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	struct sockaddr *sa = addr;
+	int ret;
+
+	ret = eth_prepare_mac_addr_change(ndev, addr);
+	if (ret)
+		return ret;
+	/* frames for us reach the CPU through the interface entry's address */
+	ret = nat_set_netif(p, 0, NAT_VID, sa->sa_data, ETH_DATA_LEN);
+	if (ret)
+		return ret;
+	eth_commit_mac_addr_change(ndev, addr);
+	return 0;
+}
+
 static const struct net_device_ops nat_netdev_ops = {
 	.ndo_open		= nat_open,
 	.ndo_stop		= nat_stop,
 	.ndo_start_xmit		= nat_start_xmit,
 	.ndo_tx_timeout		= nat_tx_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_set_mac_address	= nat_set_mac_address,
 	.ndo_eth_ioctl		= phy_do_ioctl_running,
 };
 
@@ -1156,6 +1174,8 @@ static int nat_probe(struct platform_device *pdev)
 		goto err_power;
 
 	ndev->netdev_ops = &nat_netdev_ops;
+	/* a table write stops the lookup unit for its duration only */
+	ndev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	ndev->watchdog_timeo = 5 * HZ;
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = ETH_DATA_LEN;
