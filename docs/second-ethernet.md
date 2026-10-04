@@ -279,6 +279,38 @@ Not verified: an SD card under concurrent load (none was in); 10/100
 Mbps operation; long runs (hours); the gateway answering ping (it ignores
 ICMP from eth0 too).
 
+## CPU load (2026-10-05)
+
+iperf3 between the board and the development host (one end off the board,
+through the LAN's router, which caps the path at ~820-920 Mbit/s), CPU
+from `/proc/stat` with `scripts/board/cpustat.py`. "busy" is of all four
+A53 cores together (100 % = four cores); ~3 % is the idle baseline. eth0
+(r8169soc, SG/checksum/TSO offload on) is the reference.
+
+| Test | eth0 | eth1 (rtd1295-hwnat) |
+|---|---|---|
+| TX at 700 Mbit/s | 27.2 % busy, 6.3k irq/s | 30.5 %, 4.6k irq/s |
+| TX, unlimited | 826 Mbit/s, 21.1 % | 878 Mbit/s, 23.2 %, 3.1k irq/s |
+| RX at 700 Mbit/s | 25.6 %, 4.6k irq/s | 34.1 %, **49k irq/s** |
+| RX, unlimited | 917-920 Mbit/s, 29-30 % | 887-900 Mbit/s, 41.6 %, **53k irq/s** |
+
+Per core during unlimited RX (both NICs' interrupts land on CPU0):
+
+| | CPU0 (IRQ + NAPI) | iperf3's core |
+|---|---|---|
+| eth0 | 70.7 % (softirq 67 %) | 33 % (sys 29 %) |
+| eth1 | **95.8 %** (softirq 84 %, irq 11 %) | 60 % (sys 49 %) |
+
+- TX costs about what eth0's does, without any offload.
+- RX costs ~35-40 % more and leaves CPU0 nearly saturated at ~900 Mbit/s.
+  Two causes visible: an interrupt per few frames (no mitigation: 53k/s
+  against eth0's 8k/s), and checksums computed in software
+  (`CHECKSUM_NONE`), which shows as the receiving process's extra sys time
+  (checksum-and-copy).
+- So the worthwhile work is interrupt mitigation and RX checksum
+  (`CHECKSUM_UNNECESSARY` when the core's L3/L4 flags say OK). TX
+  checksum/TSO is not needed for throughput.
+
 ## Findings
 
 - **Descriptor format.** Out of reset `CPUICR1.CF_PKT_HDR_TYPE` = 0
@@ -354,9 +386,10 @@ for later, once the boot loader and distribution are chosen.
 - MAC address: random by decision for now; `mac-base` from a per-board
   store later (see "MAC address").
 - Interrupt mitigation (`CPUIMCR`, `CPUIMTTR*`, `CPUIMPNTR*`; Realtek uses
-  400 us / 32 packets): ~830k interrupts for 2.8 M packets now.
+  400 us / 32 packets): 53k interrupts/s at 900 Mbit/s RX ("CPU load").
 - RX checksum: the core reports L3/L4 checksum OK; the driver still leaves
-  `CHECKSUM_NONE`. TX checksum/TSO offload not used.
+  `CHECKSUM_NONE`. TX checksum/TSO not needed (TX already costs what
+  eth0's does).
 - Pause (above). 10/100 Mbps not tried.
 - Remove what is only for bring-up before upstreaming (`nat_dump()`, the
   debugfs file).
