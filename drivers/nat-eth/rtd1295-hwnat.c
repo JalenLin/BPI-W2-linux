@@ -32,6 +32,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
+#include <linux/rtnetlink.h>
 
 #define DRV_NAME		"rtd1295-hwnat"
 
@@ -292,8 +293,10 @@ struct nat_priv {
 	int last_link;
 
 	u32 rx_usecs, rx_frames, tx_usecs, tx_frames;
+	bool pause_autoneg, pause_rx, pause_tx;
 
 	struct napi_struct napi;
+	struct work_struct reset_work;
 	spinlock_t tx_lock;
 	struct nat_ring rx[NAT_RX_RINGS];
 	struct nat_ring tx[NAT_TX_RINGS];
@@ -749,11 +752,18 @@ static void nat_tx_reclaim(struct nat_priv *p)
 {
 	struct nat_ring *r = &p->tx[0];
 	struct net_device *ndev = p->ndev;
-	unsigned int hw, done = 0, bytes = 0;
+	unsigned int done = 0, bytes = 0;
 
+	/*
+	 * The core clears a descriptor's owner bit once it has sent it.
+	 * Realtek goes by the current-descriptor pointer instead (its MIPS
+	 * port kept descriptors in cached memory), but that pointer reads
+	 * the ring's base once TX is stopped, and would hand back
+	 * descriptors the core still owns. Ours are coherent memory.
+	 */
 	spin_lock(&p->tx_lock);
-	hw = nat_cdp_index(p, r, CPUTPDCR0);
-	while (r->tail != hw && r->tail != r->head) {
+	while (r->tail != r->head &&
+	       !(le32_to_cpu(r->desc[r->tail].opts1) & DESC_OWN)) {
 		struct nat_buf *b = &r->buf[r->tail];
 
 		dma_unmap_single(p->dev, b->dma, b->len, DMA_TO_DEVICE);
@@ -977,6 +987,8 @@ static void nat_im_apply(struct nat_priv *p)
 
 /* ---- ethtool ---- */
 
+static void nat_adjust_link(struct net_device *ndev);
+
 static int nat_get_coalesce(struct net_device *ndev,
 			    struct ethtool_coalesce *ec,
 			    struct kernel_ethtool_coalesce *kec,
@@ -1016,7 +1028,141 @@ static int nat_set_coalesce(struct net_device *ndev,
 	return 0;
 }
 
+/*
+ * The switch's MIB counters. In at 0x161100 + port * 0x80, out at
+ * 0x161800 + port * 0x80 (offsets below from 0x161100). The octet counters are two words, the low one
+ * 22 bits wide (Realtek reads them as low + (high << 22)).
+ */
+struct nat_mib {
+	char name[ETH_GSTRING_LEN];
+	u16 off;
+	u8 port;
+	bool wide;
+};
+
+#define MIB_IN_BASE		0x161100
+#define MIB_CPU_PORT		6
+#define NAT_MIB(n, o, w)	{ n, o, NAT_PORT, w }
+#define CPU_MIB(n, o)		{ n, o, MIB_CPU_PORT, false }
+
+static const struct nat_mib nat_mibs[] = {
+	NAT_MIB("rx_octets", 0x00, true),
+	NAT_MIB("rx_unicast", 0x08, false),
+	NAT_MIB("rx_multicast", 0x3c, false),
+	NAT_MIB("rx_broadcast", 0x40, false),
+	NAT_MIB("rx_undersize", 0x14, false),
+	NAT_MIB("rx_fragments", 0x18, false),
+	NAT_MIB("rx_64", 0x1c, false),
+	NAT_MIB("rx_65_127", 0x20, false),
+	NAT_MIB("rx_128_255", 0x24, false),
+	NAT_MIB("rx_256_511", 0x28, false),
+	NAT_MIB("rx_512_1023", 0x2c, false),
+	NAT_MIB("rx_1024_1518", 0x30, false),
+	NAT_MIB("rx_oversize", 0x34, false),
+	NAT_MIB("rx_jabbers", 0x38, false),
+	NAT_MIB("rx_port_discards", 0x44, false),
+	NAT_MIB("rx_drop_events", 0x48, false),
+	NAT_MIB("rx_fcs_errors", 0x4c, false),
+	NAT_MIB("rx_symbol_errors", 0x50, false),
+	NAT_MIB("rx_unknown_opcodes", 0x54, false),
+	NAT_MIB("rx_pause", 0x58, false),
+	NAT_MIB("rx_queue_discards", 0x60, false),
+	NAT_MIB("tx_octets", 0x700, true),
+	NAT_MIB("tx_unicast", 0x708, false),
+	NAT_MIB("tx_multicast", 0x70c, false),
+	NAT_MIB("tx_broadcast", 0x710, false),
+	NAT_MIB("tx_discards", 0x714, false),
+	NAT_MIB("tx_single_collisions", 0x718, false),
+	NAT_MIB("tx_multiple_collisions", 0x71c, false),
+	NAT_MIB("tx_deferred", 0x720, false),
+	NAT_MIB("tx_late_collisions", 0x724, false),
+	NAT_MIB("tx_excessive_collisions", 0x728, false),
+	NAT_MIB("tx_pause", 0x72c, false),
+	NAT_MIB("tx_delay_discards", 0x730, false),
+	NAT_MIB("tx_collisions", 0x734, false),
+	/* the CPU port: frames from our TX ring in, to our RX ring out */
+	CPU_MIB("cpu_in_port_discards", 0x44),
+	CPU_MIB("cpu_in_queue_discards", 0x60),
+	CPU_MIB("cpu_out_discards", 0x714),
+	CPU_MIB("cpu_out_delay_discards", 0x730),
+};
+
+static u64 nat_mib_read(struct nat_priv *p, const struct nat_mib *m)
+{
+	u32 reg = MIB_IN_BASE + m->port * 0x80 + m->off;
+	u32 lo, hi;
+
+	if (!m->wide)
+		return nat_r(p, reg);
+	do {
+		hi = nat_r(p, reg + 4);
+		lo = nat_r(p, reg);
+	} while (hi != nat_r(p, reg + 4));
+	return lo + ((u64)hi << 22);
+}
+
+static int nat_get_sset_count(struct net_device *ndev, int sset)
+{
+	return sset == ETH_SS_STATS ? ARRAY_SIZE(nat_mibs) : -EOPNOTSUPP;
+}
+
+static void nat_get_strings(struct net_device *ndev, u32 sset, u8 *data)
+{
+	unsigned int i;
+
+	if (sset != ETH_SS_STATS)
+		return;
+	for (i = 0; i < ARRAY_SIZE(nat_mibs); i++)
+		ethtool_puts(&data, nat_mibs[i].name);
+}
+
+static void nat_get_ethtool_stats(struct net_device *ndev,
+				  struct ethtool_stats *stats, u64 *data)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(nat_mibs); i++)
+		data[i] = nat_mib_read(p, &nat_mibs[i]);
+}
+
+static void nat_get_pauseparam(struct net_device *ndev,
+			       struct ethtool_pauseparam *epause)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+
+	epause->autoneg = p->pause_autoneg;
+	epause->rx_pause = p->pause_rx;
+	epause->tx_pause = p->pause_tx;
+}
+
+static int nat_set_pauseparam(struct net_device *ndev,
+			      struct ethtool_pauseparam *epause)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	struct phy_device *phy = ndev->phydev;
+
+	if (phy && !phy_validate_pause(phy, epause))
+		return -EINVAL;
+
+	p->pause_autoneg = epause->autoneg;
+	p->pause_rx = epause->rx_pause;
+	p->pause_tx = epause->tx_pause;
+	if (phy) {
+		/* renegotiates if the advertisement changes */
+		phy_set_asym_pause(phy, p->pause_rx, p->pause_tx);
+		/* a forced setting applies to the MAC right away */
+		nat_adjust_link(ndev);
+	}
+	return 0;
+}
+
 static const struct ethtool_ops nat_ethtool_ops = {
+	.get_pauseparam		= nat_get_pauseparam,
+	.set_pauseparam		= nat_set_pauseparam,
+	.get_sset_count		= nat_get_sset_count,
+	.get_strings		= nat_get_strings,
+	.get_ethtool_stats	= nat_get_ethtool_stats,
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
 				     ETHTOOL_COALESCE_MAX_FRAMES,
 	.get_coalesce		= nat_get_coalesce,
@@ -1048,7 +1194,12 @@ static void nat_adjust_link(struct net_device *ndev)
 		}
 		if (phy->duplex == DUPLEX_FULL)
 			val |= PCR_FORCE_DUPLEX;
-		phy_get_pause(phy, &tx_pause, &rx_pause);
+		if (p->pause_autoneg) {
+			phy_get_pause(phy, &tx_pause, &rx_pause);
+		} else {
+			tx_pause = p->pause_tx;
+			rx_pause = p->pause_rx;
+		}
 		if (tx_pause)
 			val |= FIELD_PREP(PCR_PAUSE, BIT(0));
 		if (rx_pause)
@@ -1060,6 +1211,28 @@ static void nat_adjust_link(struct net_device *ndev)
 		p->last_link = phy->link;
 		phy_print_status(phy);
 	}
+}
+
+/* the rings must be set up (nat_rings_init()) */
+static void nat_hw_start(struct nat_priv *p)
+{
+	nat_w(p, CPUICR, CPUICR_TXCMD | CPUICR_RXCMD | CPUICR_BURST_128W |
+			 CPUICR_MBUF_2048);
+	/* writing the burst size resets the FIFO marks */
+	nat_rmw(p, DMA_CR0, DMA_CR0_FIFO_MASK, DMA_CR0_FIFO_MARKS);
+	nat_im_apply(p);
+	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
+	nat_w(p, CPUIIMR, NAT_IRQS);
+	nat_w(p, SSIR, SSIR_TRXRDY);
+}
+
+static void nat_hw_stop(struct nat_priv *p)
+{
+	nat_w(p, CPUIIMR, 0);
+	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
+	nat_w(p, CPUICR, 0);
+	/* the core may still be fetching; let it see the stop first */
+	usleep_range(1000, 2000);
 }
 
 static int nat_open(struct net_device *ndev)
@@ -1081,25 +1254,19 @@ static int nat_open(struct net_device *ndev)
 	/*
 	 * No EEE: the MAC has it off (EEECR), and with the RTL8211F
 	 * advertising it the link dropped once, a second after coming up.
-	 * No pause either: with flow control negotiated, TCP stalled under
-	 * load and the loop test lost and corrupted frames, with no PAUSE
-	 * frame counted either way (docs/second-ethernet.md).
+	 * Pause works both ways (the MAC is forced to what phylib resolved,
+	 * or to ethtool -A's choice).
 	 */
 	phy_disable_eee(phy);
+	phy_support_asym_pause(phy);
+	phy_set_asym_pause(phy, p->pause_rx, p->pause_tx);
 
 	ret = request_irq(p->irq, nat_isr, 0, ndev->name, p);
 	if (ret)
 		goto err_phy;
 
 	napi_enable(&p->napi);
-	nat_w(p, CPUICR, CPUICR_TXCMD | CPUICR_RXCMD | CPUICR_BURST_128W |
-			 CPUICR_MBUF_2048);
-	/* writing the burst size resets the FIFO marks */
-	nat_rmw(p, DMA_CR0, DMA_CR0_FIFO_MASK, DMA_CR0_FIFO_MARKS);
-	nat_im_apply(p);
-	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
-	nat_w(p, CPUIIMR, NAT_IRQS);
-	nat_w(p, SSIR, SSIR_TRXRDY);
+	nat_hw_start(p);
 
 	phy_start(phy);
 	netif_start_queue(ndev);
@@ -1113,14 +1280,6 @@ err_rings:
 	return ret;
 }
 
-static void nat_hw_stop(struct nat_priv *p)
-{
-	nat_w(p, CPUIIMR, 0);
-	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
-	nat_w(p, CPUICR, 0);
-	nat_w(p, SSIR, 0);
-}
-
 static int nat_stop(struct net_device *ndev)
 {
 	struct nat_priv *p = netdev_priv(ndev);
@@ -1131,10 +1290,37 @@ static int nat_stop(struct net_device *ndev)
 	nat_hw_stop(p);
 	free_irq(p->irq, p);
 	phy_disconnect(ndev->phydev);
-	/* the core may still be fetching; let it see the stop first */
-	usleep_range(1000, 2000);
 	nat_rings_free(p);
 	return 0;
+}
+
+/* After a TX timeout: stop the DMA, rebuild both rings, start again. */
+static void nat_reset_work(struct work_struct *work)
+{
+	struct nat_priv *p = container_of(work, struct nat_priv, reset_work);
+	struct net_device *ndev = p->ndev;
+	int ret;
+
+	rtnl_lock();
+	if (!netif_running(ndev))
+		goto out;
+
+	netif_tx_disable(ndev);
+	napi_disable(&p->napi);
+	nat_hw_stop(p);
+	nat_rings_free(p);
+	ret = nat_rings_init(p);
+	if (ret) {
+		netdev_err(ndev, "cannot rebuild the rings (%d); the interface stays stopped\n",
+			   ret);
+		goto out;
+	}
+	napi_enable(&p->napi);
+	nat_hw_start(p);
+	netif_wake_queue(ndev);
+	netdev_info(ndev, "rings rebuilt\n");
+out:
+	rtnl_unlock();
 }
 
 static void nat_tx_timeout(struct net_device *ndev, unsigned int txq)
@@ -1146,6 +1332,7 @@ static void nat_tx_timeout(struct net_device *ndev, unsigned int txq)
 		   r->head, r->tail, nat_cdp_index(p, r, CPUTPDCR0),
 		   nat_r(p, CPUICR), nat_r(p, CPUIISR),
 		   nat_r(p, PSRP(NAT_PORT)));
+	schedule_work(&p->reset_work);
 }
 
 static int nat_set_mac_address(struct net_device *ndev, void *addr)
@@ -1165,6 +1352,21 @@ static int nat_set_mac_address(struct net_device *ndev, void *addr)
 	return 0;
 }
 
+/*
+ * Multicast always reaches the CPU (FFCR_UNKNOWN_MC2CPU, and the
+ * multicast table stays empty), so there is no filter to program. In
+ * promiscuous mode unknown unicast goes to the CPU as well. Unicast the
+ * switch has learned on port 5 still stays there: it is not flooded, so
+ * the CPU never sees traffic between two hosts on that side.
+ */
+static void nat_set_rx_mode(struct net_device *ndev)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+
+	nat_rmw(p, FFCR, FFCR_UNKNOWN_UC2CPU,
+		ndev->flags & IFF_PROMISC ? FFCR_UNKNOWN_UC2CPU : 0);
+}
+
 static const struct net_device_ops nat_netdev_ops = {
 	.ndo_open		= nat_open,
 	.ndo_stop		= nat_stop,
@@ -1172,13 +1374,11 @@ static const struct net_device_ops nat_netdev_ops = {
 	.ndo_tx_timeout		= nat_tx_timeout,
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= nat_set_mac_address,
+	.ndo_set_rx_mode	= nat_set_rx_mode,
 	.ndo_eth_ioctl		= phy_do_ioctl_running,
 };
 
-/* ---- debugfs: rings, registers and MIB counters, for bring-up ---- */
-
-#define MIB_IN(port, off)	(0x161100 + (port) * 0x80 + (off))
-#define MIB_OUT(port, off)	(0x161800 + (port) * 0x80 + (off))
+/* ---- debugfs: registers and rings, for bring-up ---- */
 
 static void nat_dbg_ring(struct seq_file *m, struct nat_priv *p,
 			 const char *name, struct nat_ring *r, u32 cdp_reg,
@@ -1216,30 +1416,11 @@ static int nat_dbg_show(struct seq_file *m, void *v)
 		{ "CPUIMPNTR0", CPUIMPNTR(0) }, { "CPUIMPNTR1", CPUIMPNTR(4) },
 		{ "CPUIMTTR2", CPUIMTTR(6) }, { "CPUIMPNTR2", CPUIMPNTR(6) },
 	};
-	static const struct { const char *name; u32 off; } mib_in[] = {
-		{ "octets", 0x0c }, { "ucast", 0x08 }, { "mcast", 0x3c },
-		{ "bcast", 0x40 }, { "discard", 0x44 }, { "drop", 0x48 },
-		{ "fcs_err", 0x4c }, { "rxdv", 0x5c }, { "qm_discard", 0x60 },
-	}, mib_out[] = {
-		{ "octets", 0x00 }, { "ucast", 0x08 }, { "mcast", 0x0c },
-		{ "bcast", 0x10 },
-	};
 	struct nat_priv *p = m->private;
-	unsigned int i, port;
+	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(regs); i++)
 		seq_printf(m, "%-9s %08x\n", regs[i].name, nat_r(p, regs[i].reg));
-	for (port = NAT_PORT; port <= NAT_PORT + 1; port++) {
-		seq_printf(m, "%s in: ", port == NAT_PORT ? "port 5" : "cpu   ");
-		for (i = 0; i < ARRAY_SIZE(mib_in); i++)
-			seq_printf(m, " %s %u", mib_in[i].name,
-				   nat_r(p, MIB_IN(port, mib_in[i].off)));
-		seq_printf(m, "\n%s out:", port == NAT_PORT ? "port 5" : "cpu   ");
-		for (i = 0; i < ARRAY_SIZE(mib_out); i++)
-			seq_printf(m, " %s %u", mib_out[i].name,
-				   nat_r(p, MIB_OUT(port, mib_out[i].off)));
-		seq_puts(m, "\n");
-	}
 	nat_dbg_ring(m, p, "rx0", &p->rx[0], CPURPDCR(0), 8);
 	nat_dbg_ring(m, p, "tx0", &p->tx[0], CPUTPDCR0, 8);
 	return 0;
@@ -1269,6 +1450,7 @@ static int nat_probe(struct platform_device *pdev)
 	p->dev = dev;
 	p->ndev = ndev;
 	spin_lock_init(&p->tx_lock);
+	INIT_WORK(&p->reset_work, nat_reset_work);
 	platform_set_drvdata(pdev, p);
 
 	p->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
@@ -1327,6 +1509,9 @@ static int nat_probe(struct platform_device *pdev)
 	p->rx_frames = NAT_RX_FRAMES;
 	p->tx_usecs = NAT_TX_USECS;
 	p->tx_frames = NAT_TX_FRAMES;
+	p->pause_autoneg = true;
+	p->pause_rx = true;
+	p->pause_tx = true;
 	/* a table write stops the lookup unit for its duration only */
 	ndev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	ndev->watchdog_timeo = 5 * HZ;
@@ -1357,6 +1542,7 @@ static void nat_remove(struct platform_device *pdev)
 	struct nat_priv *p = platform_get_drvdata(pdev);
 
 	debugfs_remove(p->dbg);
+	cancel_work_sync(&p->reset_work);
 	unregister_netdev(p->ndev);
 	netif_napi_del(&p->napi);
 	nat_power_off(p);

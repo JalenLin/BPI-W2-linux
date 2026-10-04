@@ -1,10 +1,12 @@
 # The second RJ45 (hardware NAT engine)
 
-Status (2026-10-05): **works** as a loadable module,
-`drivers/nat-eth/rtd1295-hwnat.c`, with the node applied as a runtime
-overlay (no new board DTB yet). eth1 links at 1 Gbps, runs TCP at 940 Mbit/s
-each way, and eth0 is untouched. Not yet in the PiKVM image. See "Verified"
-and "Open" below.
+Status (2026-10-05): **complete except 802.1Q VLANs**, as a loadable
+module, `drivers/nat-eth/rtd1295-hwnat.c`, with the node applied as a
+runtime overlay (no board DTB has it yet). 10/100/1000 Mbps, TCP at line
+rate both ways with CPU load like eth0's, pause, promiscuous mode, RX
+checksum, interrupt mitigation, ethtool (link, pause, coalescing, MIB
+statistics), recovery from a TX stall; eth0 untouched. VLANs could not be
+tested on this LAN. See "Verified" and "Open".
 
 The first survey (2026-09-17) is `docs/06-changes.md` §11 on the `main`
 branch of `../bpiw2_pikvm`
@@ -173,7 +175,7 @@ this driver exists in BPI's trees (u-boot and the BSP 4.9 kernel have none).
 
 `drivers/nat-eth/rtd1295-hwnat.c` (compatible `realtek,rtd1295-hwnat`),
 DT node in `dts/nat-eth.dtsi`. A plain NIC: phylib, NAPI, one RX and one
-TX ring; no offloads, no switch features.
+TX ring, RX checksum offload; no switch features.
 
 ### What it does
 
@@ -206,21 +208,34 @@ mitigation, interrupts RX done / RX runout / TX ring 0 one-frame-done,
 
 Data path: TX is a direct send to port 5 (`opts4` port mask bit 5,
 `opts3` VLAN 1, lengths + 4 for the FCS the MAC appends), then
-`CPUICR.TXFD`; completion by the ring's current-descriptor pointer
-(`CPUTPDCR0`), as Realtek does. RX polls both owner bits (`opts1[0]`,
+`CPUICR.TXFD`; completion by the descriptors' owner bit (Realtek reads
+the current-descriptor pointer instead; see "Findings"). RX polls both owner bits (`opts1[0]`,
 `opts5[15]`), marks unfragmented TCP/UDP whose checksum flags are OK
 `CHECKSUM_UNNECESSARY` (everything else `CHECKSUM_NONE`, for the stack to
 check and count; Realtek drops frames with the flags clear, this driver
 does not), refills, and clears `CPUIISR` runout to resume reception.
-`nat_adjust_link()` mirrors phylib's link, speed and duplex into `PCRP5`.
+`nat_adjust_link()` mirrors phylib's link, speed, duplex and pause into
+`PCRP5`.
+
+Stop only stops the CPU side (`CPUICR`, interrupts); the switch keeps
+running (`SSIR.TRXRDY` stays set; see "Findings"). A TX timeout (the
+netdev watchdog, 5 s with the queue stopped) schedules a work item that
+stops the DMA, rebuilds both rings and starts again.
+
+Promiscuous mode sends unknown unicast to the CPU (`FFCR`). Multicast
+always reaches it (unknown multicast to CPU, empty multicast table).
+Unicast the switch has learned on port 5 stays on port 5, so traffic
+between two other hosts on that side is not seen even in promiscuous
+mode.
 
 ethtool: `-c/-C` (interrupt mitigation, rx/tx usecs and frames; default
-RX 32 frames / 200 us, TX 32 / 400 us), `-k/-K rx` (RX checksum), link
-settings and `-r` through phylib.
+RX 32 frames / 200 us, TX 32 / 400 us), `-k/-K rx` (RX checksum),
+`-a/-A` (pause: negotiated by default, or forced), `-S` (port 5's MIB
+counters and the CPU port's discards), link settings and `-r` through
+phylib. Changing the MAC address works live (`ndo_set_mac_address`).
 
 A debugfs file, `/sys/kernel/debug/rtd1295-hwnat`, dumps the main
-registers, the MIB counters of port 5 and the CPU port, and the first
-descriptors of both rings.
+registers and the first descriptors of both rings.
 
 ### Register map (offsets from 0x98060000)
 
@@ -282,9 +297,43 @@ wire move eth1 into a network namespace (`scripts/board/README.md`).
 - eth0 stayed up with its address through all of it; no eth0 messages in
   dmesg.
 
-Not verified: an SD card under concurrent load (none was in); 10/100
-Mbps operation; long runs (hours); the gateway answering ping (it ignores
+Later the same day, after the fixes in "Findings":
+
+- 10/100/1000 Mbps forced through `ethtool -s`: 100 full 94/94 Mbit/s,
+  100 half 86/78, 10 full 9.3/9.2, 10 half 7.9/7.3, back to 1 Gbps.
+- Promiscuous: frames to a MAC nobody has, 0/100 normally, 100/100
+  byte-exact with promiscuous on, 0/100 off again.
+- Pause negotiated rx/tx: under bidirectional TCP plus eMMC reads the
+  switch sent 40,429 PAUSE frames and discarded nothing (without pause the
+  same test discarded 339 frames on port 5); TCP 599 + 751 Mbit/s;
+  forced settings (`ethtool -A ... autoneg off`) land in `PCRP5` bits
+  17:16 as asked.
+- `ethtool -S` octets equal the kernel's bytes plus 4 per frame, exactly,
+  past 476 MB (so the 22-bit low word is read right).
+- TX stall induced on purpose (`CPUICR.TXCMD` cleared through /dev/mem,
+  ring then filled): watchdog after 5.3 s, rings rebuilt, ping and TCP
+  (936 Mbit/s) back without intervention.
+- Regression run (`scripts/board/regress.sh`):
+  insmod/rmmod x3; loop test 1200/1200 each way under eMMC DMA; link
+  down/up x5 each followed by TCP at 936-940 Mbit/s; iperf3 to the host
+  904/914 Mbit/s; ping 100/100 at 0.31 ms; bad checksums counted by the
+  stack; no MIB errors, no driver errors, nothing in dmesg.
+
+Not verified: an SD card under concurrent load (none was in); 802.1Q
+VLANs (below); long runs (hours); the gateway answering ping (it ignores
 ICMP from eth0 too).
+
+### 802.1Q VLANs: not testable here
+
+This LAN's switch passes only priority-tagged
+frames (VID 0, delivered untagged) and drops every other VID, both ways
+(`scripts/board/vidprobe.py`: raw frames with VIDs 0, 1, 2, 10, 100, 4094, sent from
+eth0 and from eth1; port 5 counted all of ours going out). So nothing
+about VLANs on eth1 is known yet: whether tagged frames pass the switch
+core untouched, need VLAN table entries per VID, or get their tag
+stripped. Testing needs eth0 and eth1 cabled to each other (eth0 then
+cannot carry SSH; the serial console can), or a switch port that trunks
+VLANs.
 
 ## CPU load (2026-10-05)
 
@@ -355,12 +404,32 @@ either way), so 256 stays.
 - **EEE.** The RTL8211F advertises EEE by default and phylib keeps that;
   the link then dropped once ~1 s after coming up, every time. The driver
   calls `phy_disable_eee()` (the MAC has `EEECR` = 0 anyway).
-- **Pause does not work.** With pause advertised and the MAC's forced
-  pause bits set from the result, TCP stalled under load and the loop
-  test lost and corrupted frames (one 60-byte frame arrived as 1514
-  bytes; others differed from byte 128). No PAUSE frame was counted in
-  either direction. Same with the vendor's flow-control thresholds. Pause
-  is left off; the cause is not known.
+- **Stopping must not clear `SSIR.TRXRDY`.** The first stop path cleared
+  it, as Realtek's `rtl865x_down()` does. Every `ip link set down/up` (and
+  every move to another network namespace, which closes the device) then
+  left the switch worse: TCP 938 -> 300 -> 0 Mbit/s over successive
+  cycles, while the sparse loop test still passed. Probably packet
+  buffers lost in the switch when it is stopped mid-flight. Stopping only
+  the CPU interface fixed it (5/5 cycles at line rate since).
+- **Pause works -- the earlier verdict was wrong.** It had been taken off
+  after TCP stalls and lost/corrupted frames with flow control on (one
+  60-byte frame arrived as 1514 bytes). Those runs had gone through
+  namespace moves, so through the `SSIR` stop above. With that fixed,
+  pause behaves (see "Verified") and is on by default.
+- **TX completion by owner bit.** Realtek reclaims TX descriptors up to
+  the current-descriptor pointer (`CPUTPDCR0`). That pointer reads the
+  ring's base once TX is stopped, so the driver reclaimed descriptors the
+  core still owned: TX turned into a silent black hole and the watchdog
+  never fired. The core clears the owner bit of each sent descriptor;
+  ours are coherent memory, so the driver goes by that.
+- **The netdev watchdog only fires with the queue stopped.** After the
+  induced TX stall, TCP backed off and never filled the ring (93 of 256
+  pending), so no timeout for as long as the test ran. Any real load
+  fills the ring; the test filled it with raw frames.
+- **After any link renegotiation** (ip link down/up, `ethtool -r`) a TCP
+  test started a few seconds later sometimes ran slow or failed, about 1
+  in 8. eth0 does the same after its own renegotiation (1 failure and 1
+  slow run in 8), so it is this LAN, not the driver.
 - **The CPU port's MIB counts every frame from the DMA as an FCS error**
   (its "in" side, `fcs_err` = `rxdv`), apparently because the FCS is
   appended later. Not a fault.
@@ -434,8 +503,7 @@ for later, once the boot loader and distribution are chosen.
 - TX checksum/TSO: not needed for throughput (TX costs what eth0's
   does); the descriptor fields are known (`TD_L3CS`/`TD_L4CS`, `TD_LSO`)
   if CPU on TX ever matters.
-- `ethtool -S` from the MIB counters (port 5, CPU port).
-- Pause (above). 10/100 Mbps not tried.
+- **802.1Q VLANs**: untested; needs a test setup (see "802.1Q VLANs").
 - Remove what is only for bring-up before upstreaming (`nat_dump()`, the
   debugfs file).
 - A permanent node: `dts/nat-eth.dtsi` into a board DTS (into the PiKVM
