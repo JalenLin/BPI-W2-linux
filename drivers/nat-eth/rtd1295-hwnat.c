@@ -60,6 +60,7 @@
 #define CPUIISR			0x16002c
 #define  CPUII_LINK_CHANGE	BIT(31)
 #define  CPUII_RX_RUNOUT_ALL	(0x3f << 17)
+#define  CPUII_TX_DONE0	BIT(9)		/* one frame done, ring 0 */
 #define  CPUII_TX_ALL_DONE3	BIT(13)
 #define  CPUII_TX_ALL_DONE2	BIT(12)
 #define  CPUII_RX_DONE_ALL	(0x3f << 3)
@@ -74,7 +75,27 @@
 #define DMA_CR1			0x160040		/* TX ring 0 tail offset */
 #define CPUTPDCR2		0x160060
 #define CPUTPDCR3		0x160064
-#define CPUIMCR			0x160080
+#define CPUIMCR			0x160080		/* interrupt mitigation enables */
+#define  CPUIMCR_RX(n)		BIT(n)
+#define  CPUIMCR_TX(n)		BIT(8 + (n))
+/*
+ * Mitigation thresholds, one per source: RX rings 0-5 (sources 0-5), TX
+ * rings 0-3 (6-9). Timeouts: 10 bits in 512 ns units, three to a register
+ * in source order. Frame counts: one byte each, RX 0-3 in PNTR0, RX 4-5 in
+ * PNTR1, TX 0-3 in PNTR2, and only 6 bits wide: 64 reads as 0, which
+ * interrupts continuously. (Inferred from Realtek's values, 400 us and 32
+ * frames everywhere, and checked on the board.)
+ */
+#define CPUIMTTR(src)		(0x160084 + 4 * ((src) / 3))
+#define  CPUIMTTR_SHIFT(src)	(10 * ((src) % 3))
+#define  IM_TIMEOUT_MAX		0x3ff
+#define  IM_TIMEOUT_NS		512
+#define CPUIMPNTR(src)		((src) < 4 ? 0x160094 : (src) < 6 ? 0x160098 : 0x16009c)
+#define  CPUIMPNTR_SHIFT(src)	(8 * ((src) < 4 ? (src) : (src) < 6 ? (src) - 4 : (src) - 6))
+#define  IM_FRAMES_MASK		0xff
+#define  IM_FRAMES_MAX		63
+#define IM_SRC_RX0		0
+#define IM_SRC_TX0		6
 #define DMA_CR4			0x1600a0
 #define  DMA_CR4_TX0_TAIL_AWARE	BIT(0)
 #define CPUICR1			0x1600a4
@@ -203,8 +224,14 @@ struct nat_desc {
 
 #define RX1_BUF_SIZE		GENMASK(31, 16)
 #define RX2_LEN			GENMASK(13, 0)
+#define RX3_TYPE		GENMASK(31, 29)
+#define  RX_TYPE_TCP		5
+#define  RX_TYPE_UDP		6
 #define RX4_SPA			GENMASK(15, 13)
 #define RX4_DVLAN		GENMASK(27, 16)
+#define RX4_FRAG		BIT(11)
+#define RX4_IPV6		BIT(9)
+#define RX4_IPV4		BIT(8)
 #define RX5_L3CSOK		BIT(31)
 #define RX5_L4CSOK		BIT(30)
 #define RX5_OWN2		BIT(15)
@@ -223,6 +250,15 @@ struct nat_desc {
 #define NAT_SPARE_DESCS		2	/* rings the hardware has but we do not use */
 #define NAT_RX_BUF		1540	/* frame + 2 VLAN tags + FCS */
 #define NAT_NAPI_WEIGHT		64
+/*
+ * Default interrupt mitigation (ethtool -C). Measured at ~900 Mbit/s TCP
+ * RX: 34k -> 14k interrupts/s, CPU0 91 % -> 71 %; ping unchanged (the
+ * timeout does not delay a lone frame).
+ */
+#define NAT_RX_USECS		200
+#define NAT_RX_FRAMES		32
+#define NAT_TX_USECS		400
+#define NAT_TX_FRAMES		32
 
 struct nat_buf {
 	struct sk_buff *skb;
@@ -254,6 +290,8 @@ struct nat_priv {
 	u32 phy_addr;
 	phy_interface_t phy_mode;
 	int last_link;
+
+	u32 rx_usecs, rx_frames, tx_usecs, tx_frames;
 
 	struct napi_struct napi;
 	spinlock_t tx_lock;
@@ -791,6 +829,27 @@ static netdev_tx_t nat_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	return NETDEV_TX_OK;
 }
 
+/*
+ * The core checks the IPv4 header and the TCP/UDP checksum, over IPv4 and
+ * IPv6, and passes frames that fail with the flag clear (checked on the
+ * board with frames broken on purpose). It also sets the L4 flag on
+ * fragments and on protocols it does not check, so trust it only for
+ * unfragmented TCP and UDP. Everything else goes up as CHECKSUM_NONE for
+ * the stack to check and count.
+ */
+static bool nat_rx_csum_ok(struct net_device *ndev, u32 o3, u32 o4, u32 o5)
+{
+	u32 type = FIELD_GET(RX3_TYPE, o3);
+
+	if (!(ndev->features & NETIF_F_RXCSUM))
+		return false;
+	if (type != RX_TYPE_TCP && type != RX_TYPE_UDP)
+		return false;
+	if (!(o4 & (RX4_IPV4 | RX4_IPV6)) || (o4 & RX4_FRAG))
+		return false;
+	return (o5 & (RX5_L3CSOK | RX5_L4CSOK)) == (RX5_L3CSOK | RX5_L4CSOK);
+}
+
 static int nat_rx(struct nat_priv *p, int budget)
 {
 	struct nat_ring *r = &p->rx[0];
@@ -803,7 +862,7 @@ static int nat_rx(struct nat_priv *p, int budget)
 		struct nat_buf *b = &r->buf[i];
 		struct sk_buff *skb, *fresh;
 		dma_addr_t dma;
-		u32 o2, o5;
+		u32 o2, o3, o4, o5;
 
 		/* the core clears both owner bits when it is done */
 		o5 = le32_to_cpu(d->opts5);
@@ -811,11 +870,13 @@ static int nat_rx(struct nat_priv *p, int budget)
 			break;
 		dma_rmb();
 		o2 = le32_to_cpu(d->opts2);
+		o3 = le32_to_cpu(d->opts3);
+		o4 = le32_to_cpu(d->opts4);
 		o5 = le32_to_cpu(d->opts5);
 
 		len = FIELD_GET(RX2_LEN, o2);
-		if (len < ETH_HLEN + ETH_FCS_LEN || len > NAT_RX_BUF ||
-		    !(o5 & RX5_L3CSOK) || !(o5 & RX5_L4CSOK)) {
+		if (len < ETH_HLEN + ETH_FCS_LEN || len > NAT_RX_BUF) {
+			ndev->stats.rx_length_errors++;
 			ndev->stats.rx_errors++;
 			goto give;
 		}
@@ -843,6 +904,8 @@ static int nat_rx(struct nat_priv *p, int budget)
 		d->addr = cpu_to_le32(dma);
 
 		skb_put(skb, len);
+		if (nat_rx_csum_ok(ndev, o3, o4, o5))
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
 		skb->protocol = eth_type_trans(skb, ndev);
 		ndev->stats.rx_packets++;
 		ndev->stats.rx_bytes += len;
@@ -858,7 +921,11 @@ give:
 	return done;
 }
 
-#define NAT_IRQS (CPUII_RX_DONE_ALL | CPUII_RX_RUNOUT_ALL | CPUII_TX_ALL_DONE0)
+/*
+ * TX completion on "one frame done", not "ring empty": only the former
+ * obeys mitigation, and the ring empties after every lone ACK.
+ */
+#define NAT_IRQS (CPUII_RX_DONE_ALL | CPUII_RX_RUNOUT_ALL | CPUII_TX_DONE0)
 
 static int nat_poll(struct napi_struct *napi, int budget)
 {
@@ -884,6 +951,81 @@ static irqreturn_t nat_isr(int irq, void *data)
 	napi_schedule(&p->napi);
 	return IRQ_HANDLED;
 }
+
+/* ---- interrupt mitigation ---- */
+
+static void nat_im_set(struct nat_priv *p, unsigned int src, u32 usecs,
+		       u32 frames)
+{
+	u32 t = min_t(u32, DIV_ROUND_UP(usecs * 1000, IM_TIMEOUT_NS),
+		      IM_TIMEOUT_MAX);
+	u32 en = src < IM_SRC_TX0 ? CPUIMCR_RX(src) : CPUIMCR_TX(src - IM_SRC_TX0);
+
+	nat_rmw(p, CPUIMTTR(src), IM_TIMEOUT_MAX << CPUIMTTR_SHIFT(src),
+		t << CPUIMTTR_SHIFT(src));
+	nat_rmw(p, CPUIMPNTR(src), IM_FRAMES_MASK << CPUIMPNTR_SHIFT(src),
+		max(frames, 1U) << CPUIMPNTR_SHIFT(src));
+	/* one frame or no wait: interrupt per completion, as out of reset */
+	nat_rmw(p, CPUIMCR, en, frames > 1 && t ? en : 0);
+}
+
+static void nat_im_apply(struct nat_priv *p)
+{
+	nat_im_set(p, IM_SRC_RX0, p->rx_usecs, p->rx_frames);
+	nat_im_set(p, IM_SRC_TX0, p->tx_usecs, p->tx_frames);
+}
+
+/* ---- ethtool ---- */
+
+static int nat_get_coalesce(struct net_device *ndev,
+			    struct ethtool_coalesce *ec,
+			    struct kernel_ethtool_coalesce *kec,
+			    struct netlink_ext_ack *extack)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+
+	ec->rx_coalesce_usecs = p->rx_usecs;
+	ec->rx_max_coalesced_frames = p->rx_frames;
+	ec->tx_coalesce_usecs = p->tx_usecs;
+	ec->tx_max_coalesced_frames = p->tx_frames;
+	return 0;
+}
+
+static int nat_set_coalesce(struct net_device *ndev,
+			    struct ethtool_coalesce *ec,
+			    struct kernel_ethtool_coalesce *kec,
+			    struct netlink_ext_ack *extack)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	u32 max_us = IM_TIMEOUT_MAX * IM_TIMEOUT_NS / 1000;
+
+	if (ec->rx_coalesce_usecs > max_us || ec->tx_coalesce_usecs > max_us) {
+		NL_SET_ERR_MSG_FMT(extack, "at most %u us", max_us);
+		return -EINVAL;
+	}
+	if (ec->rx_max_coalesced_frames > IM_FRAMES_MAX ||
+	    ec->tx_max_coalesced_frames > IM_FRAMES_MAX) {
+		NL_SET_ERR_MSG_FMT(extack, "at most %u frames", IM_FRAMES_MAX);
+		return -EINVAL;
+	}
+	p->rx_usecs = ec->rx_coalesce_usecs;
+	p->rx_frames = ec->rx_max_coalesced_frames;
+	p->tx_usecs = ec->tx_coalesce_usecs;
+	p->tx_frames = ec->tx_max_coalesced_frames;
+	nat_im_apply(p);
+	return 0;
+}
+
+static const struct ethtool_ops nat_ethtool_ops = {
+	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
+				     ETHTOOL_COALESCE_MAX_FRAMES,
+	.get_coalesce		= nat_get_coalesce,
+	.set_coalesce		= nat_set_coalesce,
+	.get_link		= ethtool_op_get_link,
+	.get_link_ksettings	= phy_ethtool_get_link_ksettings,
+	.set_link_ksettings	= phy_ethtool_set_link_ksettings,
+	.nway_reset		= phy_ethtool_nway_reset,
+};
 
 /* ---- netdev ---- */
 
@@ -954,6 +1096,7 @@ static int nat_open(struct net_device *ndev)
 			 CPUICR_MBUF_2048);
 	/* writing the burst size resets the FIFO marks */
 	nat_rmw(p, DMA_CR0, DMA_CR0_FIFO_MASK, DMA_CR0_FIFO_MARKS);
+	nat_im_apply(p);
 	nat_w(p, CPUIISR, nat_r(p, CPUIISR));
 	nat_w(p, CPUIIMR, NAT_IRQS);
 	nat_w(p, SSIR, SSIR_TRXRDY);
@@ -1069,6 +1212,9 @@ static int nat_dbg_show(struct seq_file *m, void *v)
 		{ "FFCR", FFCR }, { "PCRP5", PCRP(NAT_PORT) },
 		{ "PSRP5", PSRP(NAT_PORT) }, { "P5GMIICR", P5GMIICR },
 		{ "SSIR", SSIR }, { "PVCR2", PVCR(NAT_PORT) },
+		{ "CPUIMCR", CPUIMCR }, { "CPUIMTTR0", CPUIMTTR(0) },
+		{ "CPUIMPNTR0", CPUIMPNTR(0) }, { "CPUIMPNTR1", CPUIMPNTR(4) },
+		{ "CPUIMTTR2", CPUIMTTR(6) }, { "CPUIMPNTR2", CPUIMPNTR(6) },
 	};
 	static const struct { const char *name; u32 off; } mib_in[] = {
 		{ "octets", 0x0c }, { "ucast", 0x08 }, { "mcast", 0x3c },
@@ -1174,6 +1320,13 @@ static int nat_probe(struct platform_device *pdev)
 		goto err_power;
 
 	ndev->netdev_ops = &nat_netdev_ops;
+	ndev->ethtool_ops = &nat_ethtool_ops;
+	ndev->hw_features = NETIF_F_RXCSUM;
+	ndev->features = NETIF_F_RXCSUM;
+	p->rx_usecs = NAT_RX_USECS;
+	p->rx_frames = NAT_RX_FRAMES;
+	p->tx_usecs = NAT_TX_USECS;
+	p->tx_frames = NAT_TX_FRAMES;
 	/* a table write stops the lookup unit for its duration only */
 	ndev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 	ndev->watchdog_timeo = 5 * HZ;

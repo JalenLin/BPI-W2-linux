@@ -200,16 +200,23 @@ Probe:
 Open: rings (256 RX, 256 TX; rings 1-5 and TX 1-3 get two empty,
 CPU-owned descriptors so a stray frame finds no buffer), TX ring 0 tail
 in `DMA_CR1` + `DMA_CR4.TX0_TAIL_AWARE` (as Realtek: no EOR on TX),
-`CPUICR` = TX/RX on, 128-word bursts, `DMA_CR0` FIFO marks, interrupts
-RX done / RX runout / TX ring 0 all done, `SSIR.TRXRDY`.
+`CPUICR` = TX/RX on, 128-word bursts, `DMA_CR0` FIFO marks, interrupt
+mitigation, interrupts RX done / RX runout / TX ring 0 one-frame-done,
+`SSIR.TRXRDY`.
 
 Data path: TX is a direct send to port 5 (`opts4` port mask bit 5,
 `opts3` VLAN 1, lengths + 4 for the FCS the MAC appends), then
 `CPUICR.TXFD`; completion by the ring's current-descriptor pointer
 (`CPUTPDCR0`), as Realtek does. RX polls both owner bits (`opts1[0]`,
-`opts5[15]`), drops frames whose L3/L4 checksum flags are not OK (as
-Realtek), refills, and clears `CPUIISR` runout to resume reception.
+`opts5[15]`), marks unfragmented TCP/UDP whose checksum flags are OK
+`CHECKSUM_UNNECESSARY` (everything else `CHECKSUM_NONE`, for the stack to
+check and count; Realtek drops frames with the flags clear, this driver
+does not), refills, and clears `CPUIISR` runout to resume reception.
 `nat_adjust_link()` mirrors phylib's link, speed and duplex into `PCRP5`.
+
+ethtool: `-c/-C` (interrupt mitigation, rx/tx usecs and frames; default
+RX 32 frames / 200 us, TX 32 / 400 us), `-k/-K rx` (RX checksum), link
+settings and `-r` through phylib.
 
 A debugfs file, `/sys/kernel/debug/rtd1295-hwnat`, dumps the main
 registers, the MIB counters of port 5 and the CPU port, and the first
@@ -311,6 +318,23 @@ Per core during unlimited RX (both NICs' interrupts land on CPU0):
   (`CHECKSUM_UNNECESSARY` when the core's L3/L4 flags say OK). TX
   checksum/TSO is not needed for throughput.
 
+### After interrupt mitigation and RX checksum (same day)
+
+Defaults RX 32 frames / 200 us, TX 32 / 400 us, RX checksum on:
+
+| Test | before | after | eth0 |
+|---|---|---|---|
+| RX, unlimited (~900 Mbit/s) | 41.6 % busy, CPU0 95.8 %, 53k irq/s | ~31-32 %, CPU0 ~68-71 %, 12-14k irq/s | 29-30 %, CPU0 70.7 %, 8k irq/s |
+| RX at 700 Mbit/s | 34.1 %, 49k irq/s | 30.5 %, 9.9k irq/s | 25.6 % |
+| TX, unlimited | 878 Mbit/s, 23.2 % | 871-908 Mbit/s, 22.6 %, 6k irq/s | 826 Mbit/s, 21.1 % |
+| ping eth0 -> eth1, 10 ms apart | 0.30 ms avg | 0.30-0.31 ms avg | |
+
+RX now costs about what eth0's does; CPU0 has headroom at line rate.
+Throughput through the router varies run to run by ±40 Mbit/s for both
+NICs alike (three alternating runs: eth1 841/903/917, eth0 899/904/869).
+512 RX descriptors instead of 256 changed nothing (no port discards
+either way), so 256 stays.
+
 ## Findings
 
 - **Descriptor format.** Out of reset `CPUICR1.CF_PKT_HDR_TYPE` = 0
@@ -341,7 +365,29 @@ Per core during unlimited RX (both NICs' interrupts land on CPU0):
   (its "in" side, `fcs_err` = `rxdv`), apparently because the FCS is
   appended later. Not a fault.
 - `dot1dTpPortInDiscards` on port 5: 339 out of 2.55 M frames under the
-  concurrent test, presumably while RX ring 0 was full.
+  concurrent test (before mitigation), presumably while RX ring 0 was
+  full. None in the TCP runs after mitigation.
+- **RX checksum flags** (checked with frames broken on purpose,
+  `scripts/board/badcsum.py`): `opts3[31:29]` is the type (5 TCP, 6 UDP,
+  3 ICMP and ICMPv6, 0 other, e.g. ARP), `opts4` bit 8/9 IPv4/IPv6, bit 11
+  fragment. The core checks the IPv4 header and TCP/UDP checksums over
+  IPv4 and IPv6 and clears `opts5` bit 31 (L3) or 30 (L4) when one is
+  wrong. It still passes such frames to the CPU, `CSCR`'s "do not
+  forward" bits notwithstanding. It leaves the L4 flag set on fragments,
+  and a UDP checksum of 0 counts as OK.
+- **Interrupt mitigation registers** (no field definitions in the SDK;
+  inferred from Realtek's values and checked): ten sources, RX rings 0-5
+  and TX rings 0-3. `CPUIMCR` bit n enables RX ring n, bit 8 + n TX ring
+  n. `CPUIMTTR0-3`: 10-bit timeouts in 512 ns units, three per register
+  in source order. `CPUIMPNTR0-2`: frame counts one per byte, RX 0-3,
+  RX 4-5, TX 0-3, **6 bits wide**: 64 reads as 0 and the interrupt fires
+  continuously (an interrupt storm, 223k/s). The timeout acts like a
+  minimum gap between interrupts: a lone frame is not delayed (ping
+  unchanged).
+- **TX completion interrupt.** "TX ring all done" (`CPUIISR` bit 1) is
+  not mitigated, and during TCP RX the ring empties after every ACK:
+  27k interrupts/s whatever the settings. "One frame done" (bit 9) is
+  mitigated; the driver uses that.
 - The core did not need the NAT SRAM power domain or PLLDDSB touched (both
   on already), nor `rtl865x_enableDevPortForward()`'s ForceLink toggling,
   nor any ACL.
@@ -385,11 +431,10 @@ for later, once the boot loader and distribution are chosen.
 
 - MAC address: random by decision for now; `mac-base` from a per-board
   store later (see "MAC address").
-- Interrupt mitigation (`CPUIMCR`, `CPUIMTTR*`, `CPUIMPNTR*`; Realtek uses
-  400 us / 32 packets): 53k interrupts/s at 900 Mbit/s RX ("CPU load").
-- RX checksum: the core reports L3/L4 checksum OK; the driver still leaves
-  `CHECKSUM_NONE`. TX checksum/TSO not needed (TX already costs what
-  eth0's does).
+- TX checksum/TSO: not needed for throughput (TX costs what eth0's
+  does); the descriptor fields are known (`TD_L3CS`/`TD_L4CS`, `TD_LSO`)
+  if CPU on TX ever matters.
+- `ethtool -S` from the MIB counters (port 5, CPU port).
 - Pause (above). 10/100 Mbps not tried.
 - Remove what is only for bring-up before upstreaming (`nat_dump()`, the
   debugfs file).
