@@ -12,7 +12,7 @@ that the PiKVM port does not need and therefore left out:
 | SATA | AHCI at `0x9803f000`, PHY at `0x9803ff60` | [docs/sata.md](docs/sata.md) |
 | PCIe | two x1 root ports, `0x9804e000` and `0x9803b000` | [docs/pcie.md](docs/pcie.md) |
 | IR receiver | `0x98007400` (ISO block) | [docs/ir.md](docs/ir.md) |
-| Second RJ45 | the hardware NAT engine's MAC0 (`0x98060000`) + RTL8211F | [docs/second-ethernet.md](docs/second-ethernet.md) |
+| Second RJ45 | the hardware NAT engine's port 5 (`0x98060000`) + RTL8211F | [docs/second-ethernet.md](docs/second-ethernet.md) |
 
 None of these has a mainline driver. Each has a Realtek BSP 4.9 driver to read
 (not to copy wholesale). The goal is clean drivers in mainline style that could

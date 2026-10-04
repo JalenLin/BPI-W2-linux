@@ -36,10 +36,11 @@ in `phy-rtk-sata.c`. BPI's W2 DTS sets both nodes to `okay`.
 
 ## Things to know before starting
 
-- The hardware NAT code (see second-ethernet.md) has a flag "MAC0 interface
-  used by SATA (0) or NAT (1)" and toggles a `sata_func_exist_0` reset. So
-  SATA and the NAT engine's MAC0 share something, probably SerDes or pins.
-  Find out what before bringing up either.
+- The hardware NAT code has a flag "MAC0 interface used by SATA (0) or
+  NAT (1)" and toggles a `sata_func_exist_0` reset. That is the NAT
+  engine's MAC0 in SGMII mode using the SATA0 PHY as its SerDes
+  (`SB2_SATA_PHY_CTRL.sata_sgmii_sel`). The second RJ45 is MAC5, not MAC0,
+  so it does not touch SATA (see second-ethernet.md, "Port numbering").
 - Mainline approach: `ahci_platform` with a small glue (resets, clocks, the
   power GPIO) and a `phy` driver for the PHY, as `ahci_mtk.c` or
   `ahci_brcm.c` do.
