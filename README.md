@@ -1,8 +1,10 @@
 # BPI-W2 peripherals
 
 Mainline Linux drivers for the Banana Pi BPI-W2 (Realtek RTD1296) blocks
-that the [PiKVM port](https://github.com/JalenLin/BananaPi_W2_PiKVM)
-leaves out: SATA, PCIe, the IR receiver and the second RJ45.
+that mainline still lacks: SATA, PCIe, the IR receiver and the second RJ45.
+The kernel side of an independent OS for the board (the userland could be
+OpenWrt or Ubuntu); the [PiKVM port](https://github.com/JalenLin/BananaPi_W2_PiKVM)
+serves as the build and test base.
 
 The second RJ45 works as a loadable module (`drivers/nat-eth/`); the
 rest is not started. This is where that work happens. Start with

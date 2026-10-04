@@ -112,7 +112,8 @@ CLK_EN2) and `<&iso_clk N>`, interrupts go through `&misc_irq_mux` /
 
 ### Graduating a driver
 
-When a driver works and is wanted in the image, move it into the PiKVM
+Optional: this repository's drivers are not made for the PiKVM image (see
+AGENTS.md, "Scope"). When the user wants one in that image anyway, move it into the PiKVM
 repository the way its other drivers are kept there: the source in
 `kernel/mainline/`, a patch in `patches/linux-mainline/` that adds the
 Kconfig/Makefile lines, the copy line in `scripts/build-kernel-mainline.sh`,

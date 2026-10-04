@@ -18,10 +18,19 @@ None of these has a mainline driver. Each has a Realtek BSP 4.9 driver to read
 (not to copy wholesale). The goal is clean drivers in mainline style that could
 one day go upstream.
 
-The PiKVM port itself lives in a sibling repository, `../bpiw2_pikvm`
-(GitHub `JalenLin/BananaPi_W2_PiKVM`, branch `kernel-6.18`). This repository
-**depends on it** for the kernel tree, the board device tree, the toolchain
-container, the images and the board access scripts. Read
+**Scope (2026-10-05): this is mainline kernel work for the RTD1296, independent
+of PiKVM.** Treat it as the kernel of an independent OS; the userland may end
+up OpenWrt or Ubuntu. So solve things in the kernel and the device tree
+(drivers, DT properties, nvmem, data the boot loader provides), never with
+files for a particular userland: no PiKVM overlay files, udev rules, systemd
+`.link`/`.network` files or distro scripts as part of a feature. A driver
+going into the PiKVM image is optional, not the goal.
+
+The PiKVM port lives in a sibling repository, `../bpiw2_pikvm`
+(GitHub `JalenLin/BananaPi_W2_PiKVM`, branch `kernel-6.18`). It is this
+repository's **build and test base**, not its target: the kernel tree, the
+board device tree, the toolchain container, the image the board runs and the
+board access scripts come from there. Read
 [docs/board-and-tooling.md](docs/board-and-tooling.md) before building.
 
 ## Working rules (non-negotiable)
@@ -64,7 +73,7 @@ container, the images and the board access scripts. Read
 - This repository has no remote yet. Do not create one or push anywhere
   without the user's say-so.
 - In `../bpiw2_pikvm`, keep `main` and `kernel-6.18` separate (never merge),
-  and touch it only when a driver here is ready to join the image (see
+  and touch it only when the user wants a driver here in that image (see
   "Graduating a driver" in docs/board-and-tooling.md).
 
 ## Layout
