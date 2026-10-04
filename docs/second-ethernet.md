@@ -1,12 +1,12 @@
 # The second RJ45 (hardware NAT engine)
 
-Status (2026-10-05): **complete except 802.1Q VLANs**, as a loadable
-module, `drivers/nat-eth/rtd1295-hwnat.c`, with the node applied as a
-runtime overlay (no board DTB has it yet). 10/100/1000 Mbps, TCP at line
-rate both ways with CPU load like eth0's, pause, promiscuous mode, RX
-checksum, interrupt mitigation, ethtool (link, pause, coalescing, MIB
-statistics), recovery from a TX stall; eth0 untouched. VLANs could not be
-tested on this LAN. See "Verified" and "Open".
+Status (2026-10-05): **complete**, as a loadable module,
+`drivers/nat-eth/rtd1295-hwnat.c` (checkpatch --strict clean), with the
+node applied as a runtime overlay (no board DTB has it yet).
+10/100/1000 Mbps, TCP at line rate both ways with CPU load like eth0's,
+802.1Q VLANs, pause, promiscuous mode, RX checksum, interrupt mitigation,
+ethtool (link, pause, coalescing, MIB statistics), recovery from a TX
+stall; eth0 untouched. See "Verified" and "Open".
 
 The first survey (2026-09-17) is `docs/06-changes.md` §11 on the `main`
 branch of `../bpiw2_pikvm`
@@ -187,7 +187,8 @@ Probe:
    off, deassert, clock on.
 3. Switch core, L2 only: EEE off; `MSCR` = L2 only (no ACL, L3, L4, STP);
    L2 aging on; netif, VLAN (4096) and L2 (1024) tables cleared; netif
-   decision by VLAN, `NAPTF2CPU`, unknown multicast to CPU; VLAN ingress
+   decision **by port** (`PLITIMR`: port 5 -> netif 0; see "Findings"),
+   `NAPTF2CPU`, unknown multicast to CPU; VLAN ingress
    filter off; checksum-error frames not forwarded; vendor flow-control
    thresholds (`PBFCR5`/`PBFCR6` = 0x1ac/0x1a6); one output queue per
    port; every CPU queue to RX ring 0.
@@ -221,6 +222,15 @@ Stop only stops the CPU side (`CPUICR`, interrupts); the switch keeps
 running (`SSIR.TRXRDY` stays set; see "Findings"). A TX timeout (the
 netdev watchdog, 5 s with the queue stopped) schedules a work item that
 stops the DMA, rebuilds both rings and starts again.
+
+VLANs: `NETIF_F_HW_VLAN_CTAG_FILTER`. A VID the stack adds
+(`ndo_vlan_rx_add_vid`, e.g. creating eth1.2700 or a VLAN-aware bridge)
+gets a VLAN table entry with port 5 as a tagged member; tagged frames on
+other VIDs are discarded at port 5's ingress. Tagged frames reach the CPU
+with the tag in the data (the stack strips it) and go out as the stack
+built them. VID 1 is the port's own untagged VLAN and is refused (-EBUSY).
+In promiscuous mode every VID is open (a work item writes the ~4000
+entries under RTNL; the VIDs asked for are kept in a bitmap to restore).
 
 Promiscuous mode sends unknown unicast to the CPU (`FFCR`). Multicast
 always reaches it (unknown multicast to CPU, empty multicast table).
@@ -323,17 +333,25 @@ Not verified: an SD card under concurrent load (none was in); 802.1Q
 VLANs (below); long runs (hours); the gateway answering ping (it ignores
 ICMP from eth0 too).
 
-### 802.1Q VLANs: not testable here
+### 802.1Q VLANs
 
-This LAN's switch passes only priority-tagged
-frames (VID 0, delivered untagged) and drops every other VID, both ways
-(`scripts/board/vidprobe.py`: raw frames with VIDs 0, 1, 2, 10, 100, 4094, sent from
-eth0 and from eth1; port 5 counted all of ours going out). So nothing
-about VLANs on eth1 is known yet: whether tagged frames pass the switch
-core untouched, need VLAN table entries per VID, or get their tag
-stripped. Testing needs eth0 and eth1 cabled to each other (eth0 then
-cannot carry SSH; the serial console can), or a switch port that trunks
-VLANs.
+At first this LAN's switch passed only VID 0 (delivered
+untagged) and dropped every other VID; the user then set it to trunk VIDs
+2700-2710. Before any VLAN code, tagged frames from eth1 left with their
+tag intact, and tagged frames for eth1 were discarded at port 5's ingress
+(`rx_port_discards`). With VLAN filtering in the driver
+(`scripts/board/vlantest.sh`, eth0 VLAN devices as the far end):
+
+- no eth1 VLAN device: VID 2700 filtered; eth1.2700 and .2705 created:
+  those pass, 2710 does not; eth1.2705 deleted: closed again;
+- loop test over eth1.2700 and .2705, 400/400 byte-exact each way (frames
+  up to 1518 bytes with the tag), untagged traffic at the same time
+  400/400;
+- promiscuous on: an unregistered VID (2708) passes; off: closed again,
+  2700 still open;
+- IP over VLAN 2700 (eth1.2700 in a netns): ping 1472 bytes with DF
+  20/20, TCP 924 Mbit/s out, 939 Mbit/s in;
+- eth1.1 refused (Device or resource busy), as designed.
 
 ## CPU load (2026-10-05)
 
@@ -426,6 +444,12 @@ either way), so 256 stays.
   induced TX stall, TCP backed off and never filled the ring (93 of 256
   pending), so no timeout for as long as the test ran. Any real load
   fills the ring; the test filled it with raw frames.
+- **Interfaces chosen by port, not VLAN.** A frame addressed to the
+  interface reaches the CPU through the netif table. With the decision by
+  VLAN, a frame on VID 2700 needed a netif entry for VLAN 2700: ARP replies
+  on the VLAN were discarded, and there are only eight entries. By port
+  (`SWTCR0` = port based, `PLITIMR` port 5 -> netif 0), one entry covers
+  every VID on the port.
 - **After any link renegotiation** (ip link down/up, `ethtool -r`) a TCP
   test started a few seconds later sometimes ran slow or failed, about 1
   in 8. eth0 does the same after its own renegotiation (1 failure and 1
@@ -503,7 +527,9 @@ for later, once the boot loader and distribution are chosen.
 - TX checksum/TSO: not needed for throughput (TX costs what eth0's
   does); the descriptor fields are known (`TD_L3CS`/`TD_L4CS`, `TD_LSO`)
   if CPU on TX ever matters.
-- **802.1Q VLANs**: untested; needs a test setup (see "802.1Q VLANs").
+- RX VLAN tag stripping (`NETIF_F_HW_VLAN_CTAG_RX`): the stack strips the
+  tag in software now; the descriptor carries the VLAN fields if it ever
+  matters. 802.1ad (S-tags) not tried.
 - Remove what is only for bring-up before upstreaming (`nat_dump()`, the
   debugfs file).
 - A permanent node: `dts/nat-eth.dtsi` into a board DTS (into the PiKVM

@@ -21,6 +21,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
 #include <linux/interrupt.h>
+#include <linux/if_vlan.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -91,8 +92,9 @@
 #define  CPUIMTTR_SHIFT(src)	(10 * ((src) % 3))
 #define  IM_TIMEOUT_MAX		0x3ff
 #define  IM_TIMEOUT_NS		512
-#define CPUIMPNTR(src)		((src) < 4 ? 0x160094 : (src) < 6 ? 0x160098 : 0x16009c)
-#define  CPUIMPNTR_SHIFT(src)	(8 * ((src) < 4 ? (src) : (src) < 6 ? (src) - 4 : (src) - 6))
+#define CPUIMPNTR0		0x160094	/* RX rings 0-3 */
+#define CPUIMPNTR1		0x160098	/* RX rings 4-5 */
+#define CPUIMPNTR2		0x16009c	/* TX rings 0-3 */
 #define  IM_FRAMES_MASK		0xff
 #define  IM_FRAMES_MAX		63
 #define IM_SRC_RX0		0
@@ -167,11 +169,14 @@
 #define  MSCR_L3		BIT(1)
 #define  MSCR_L2		BIT(0)
 #define SWTCR0			0x164418
-#define  SWTCR0_NETIF_DECISION	GENMASK(17, 16)		/* 0: by VLAN */
+#define  SWTCR0_NETIF_DECISION	GENMASK(17, 16)
+#define   NETIF_BY_PORT		1	/* 0: by VLAN, 2: by MAC */
 #define  SWTCR0_TLU_STOPPED	BIT(19)
 #define  SWTCR0_TLU_STOP	BIT(18)
 #define  SWTCR0_NAPTF2CPU	BIT(14)
 #define  SWTCR0_WAN_ROUTE	GENMASK(4, 3)
+#define PLITIMR			0x164420		/* port -> netif, 3 bits each */
+#define  PLITIMR_PORT(n)	(GENMASK(2, 0) << (3 * (n)))
 #define FFCR			0x164428
 #define  FFCR_UNKNOWN_UC2CPU	BIT(1)
 #define  FFCR_UNKNOWN_MC2CPU	BIT(0)
@@ -295,9 +300,14 @@ struct nat_priv {
 	u32 rx_usecs, rx_frames, tx_usecs, tx_frames;
 	bool pause_autoneg, pause_rx, pause_tx;
 
+	/* VIDs the stack asked for, and whether all of them are open */
+	DECLARE_BITMAP(vids, VLAN_N_VID);
+	bool all_vids;
+
 	struct napi_struct napi;
 	struct work_struct reset_work;
-	spinlock_t tx_lock;
+	struct work_struct vlan_work;
+	spinlock_t tx_lock;	/* TX ring head and tail, xmit vs reclaim */
 	struct nat_ring rx[NAT_RX_RINGS];
 	struct nat_ring tx[NAT_TX_RINGS];
 
@@ -482,7 +492,7 @@ static int nat_power_on(struct nat_priv *p)
 	ret = clk_prepare_enable(p->clk);
 	if (ret)
 		return ret;
-	udelay(10);
+	usleep_range(10, 20);
 	clk_disable(p->clk);
 	ret = reset_control_deassert(p->rst);
 	if (ret) {
@@ -503,11 +513,11 @@ static void nat_power_off(struct nat_priv *p)
 static void nat_dump(struct nat_priv *p, const char *when)
 {
 	dev_dbg(p->dev,
-		 "%s: CPUICR %08x CPUICR1 %08x MSCR %08x SWTCR0 %08x PITCR %08x PCRP5 %08x PSRP5 %08x P5GMIICR %08x CPUIMCR %08x QNUMCR %08x\n",
-		 when, nat_r(p, CPUICR), nat_r(p, CPUICR1), nat_r(p, MSCR),
-		 nat_r(p, SWTCR0), nat_r(p, PITCR), nat_r(p, PCRP(NAT_PORT)),
-		 nat_r(p, PSRP(NAT_PORT)), nat_r(p, P5GMIICR),
-		 nat_r(p, CPUIMCR), nat_r(p, QNUMCR));
+		"%s: CPUICR %08x CPUICR1 %08x MSCR %08x SWTCR0 %08x PITCR %08x PCRP5 %08x PSRP5 %08x P5GMIICR %08x CPUIMCR %08x QNUMCR %08x\n",
+		when, nat_r(p, CPUICR), nat_r(p, CPUICR1), nat_r(p, MSCR),
+		nat_r(p, SWTCR0), nat_r(p, PITCR), nat_r(p, PCRP(NAT_PORT)),
+		nat_r(p, PSRP(NAT_PORT)), nat_r(p, P5GMIICR),
+		nat_r(p, CPUIMCR), nat_r(p, QNUMCR));
 }
 
 static int nat_switch_init(struct nat_priv *p, const u8 *mac)
@@ -536,9 +546,16 @@ static int nat_switch_init(struct nat_priv *p, const u8 *mac)
 		return ret;
 	}
 
-	/* interfaces are chosen by VLAN; frames for us go to the CPU */
+	/*
+	 * Frames to the interface's address go to the CPU. The interface is
+	 * chosen by port (port 5 -> netif 0), not by VLAN, so that this holds
+	 * on every VLAN the port carries with one netif entry (there are
+	 * eight).
+	 */
 	nat_rmw(p, SWTCR0, SWTCR0_NETIF_DECISION | SWTCR0_WAN_ROUTE,
+		FIELD_PREP(SWTCR0_NETIF_DECISION, NETIF_BY_PORT) |
 		SWTCR0_NAPTF2CPU);
+	nat_rmw(p, PLITIMR, PLITIMR_PORT(NAT_PORT), 0);
 	nat_rmw(p, FFCR, FFCR_UNKNOWN_UC2CPU, FFCR_UNKNOWN_MC2CPU);
 	nat_rmw(p, VCR0, VCR0_INGRESS_FILTER, 0);
 	nat_rmw(p, CSCR, CSCR_ERR_ALLOW, CSCR_L3_RECALC | CSCR_L4_RECALC);
@@ -602,7 +619,8 @@ static int nat_ring_alloc(struct nat_priv *p, struct nat_ring *r,
 			  unsigned int count)
 {
 	r->count = count;
-	r->head = r->tail = 0;
+	r->head = 0;
+	r->tail = 0;
 	r->desc = dma_alloc_coherent(p->dev, count * sizeof(*r->desc),
 				     &r->dma, GFP_KERNEL);
 	if (!r->desc)
@@ -969,12 +987,23 @@ static void nat_im_set(struct nat_priv *p, unsigned int src, u32 usecs,
 {
 	u32 t = min_t(u32, DIV_ROUND_UP(usecs * 1000, IM_TIMEOUT_NS),
 		      IM_TIMEOUT_MAX);
-	u32 en = src < IM_SRC_TX0 ? CPUIMCR_RX(src) : CPUIMCR_TX(src - IM_SRC_TX0);
+	u32 en, reg, shift;
+
+	if (src < 4) {
+		reg = CPUIMPNTR0;
+		shift = 8 * src;
+	} else if (src < IM_SRC_TX0) {
+		reg = CPUIMPNTR1;
+		shift = 8 * (src - 4);
+	} else {
+		reg = CPUIMPNTR2;
+		shift = 8 * (src - IM_SRC_TX0);
+	}
+	en = src < IM_SRC_TX0 ? CPUIMCR_RX(src) : CPUIMCR_TX(src - IM_SRC_TX0);
 
 	nat_rmw(p, CPUIMTTR(src), IM_TIMEOUT_MAX << CPUIMTTR_SHIFT(src),
 		t << CPUIMTTR_SHIFT(src));
-	nat_rmw(p, CPUIMPNTR(src), IM_FRAMES_MASK << CPUIMPNTR_SHIFT(src),
-		max(frames, 1U) << CPUIMPNTR_SHIFT(src));
+	nat_rmw(p, reg, IM_FRAMES_MASK << shift, max(frames, 1U) << shift);
 	/* one frame or no wait: interrupt per completion, as out of reset */
 	nat_rmw(p, CPUIMCR, en, frames > 1 && t ? en : 0);
 }
@@ -1030,8 +1059,9 @@ static int nat_set_coalesce(struct net_device *ndev,
 
 /*
  * The switch's MIB counters. In at 0x161100 + port * 0x80, out at
- * 0x161800 + port * 0x80 (offsets below from 0x161100). The octet counters are two words, the low one
- * 22 bits wide (Realtek reads them as low + (high << 22)).
+ * 0x161800 + port * 0x80 (offsets below from 0x161100). The octet
+ * counters are two words, the low one 22 bits wide (Realtek reads them as
+ * low + (high << 22)).
  */
 struct nat_mib {
 	char name[ETH_GSTRING_LEN];
@@ -1353,18 +1383,80 @@ static int nat_set_mac_address(struct net_device *ndev, void *addr)
 }
 
 /*
+ * Tagged frames only enter port 5 for a VID the VLAN table knows; others
+ * are discarded at ingress. TX needs nothing: a tagged frame goes out as
+ * it is. VID 1 is the port's own untagged VLAN. In promiscuous mode every
+ * VID is open, so that tagged traffic reaches the CPU unfiltered.
+ */
+static int nat_vlan_open(struct nat_priv *p, u16 vid, bool open)
+{
+	return nat_set_vlan(p, vid, open ? BIT(NAT_PORT) : 0, 0, 0);
+}
+
+static void nat_vlan_all(struct nat_priv *p, bool all)
+{
+	u16 vid;
+
+	if (all == p->all_vids)
+		return;
+	for (vid = 2; vid < VLAN_N_VID - 1; vid++)
+		if (!test_bit(vid, p->vids) && nat_vlan_open(p, vid, all))
+			break;
+	p->all_vids = all;
+}
+
+static int nat_vlan_rx_add_vid(struct net_device *ndev, __be16 proto, u16 vid)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+	int ret = 0;
+
+	if (!vid)
+		return 0;
+	if (vid == NAT_VID)
+		return -EBUSY;
+	if (!p->all_vids)
+		ret = nat_vlan_open(p, vid, true);
+	if (!ret)
+		set_bit(vid, p->vids);
+	return ret;
+}
+
+static int nat_vlan_rx_kill_vid(struct net_device *ndev, __be16 proto, u16 vid)
+{
+	struct nat_priv *p = netdev_priv(ndev);
+
+	if (!vid || vid == NAT_VID)
+		return 0;
+	clear_bit(vid, p->vids);
+	return p->all_vids ? 0 : nat_vlan_open(p, vid, false);
+}
+
+/*
  * Multicast always reaches the CPU (FFCR_UNKNOWN_MC2CPU, and the
  * multicast table stays empty), so there is no filter to program. In
- * promiscuous mode unknown unicast goes to the CPU as well. Unicast the
- * switch has learned on port 5 still stays there: it is not flooded, so
- * the CPU never sees traffic between two hosts on that side.
+ * promiscuous mode unknown unicast goes to the CPU as well, on every VID.
+ * Unicast the switch has learned on port 5 still stays there: it is not
+ * flooded, so the CPU never sees traffic between two hosts on that side.
  */
 static void nat_set_rx_mode(struct net_device *ndev)
 {
 	struct nat_priv *p = netdev_priv(ndev);
+	bool promisc = ndev->flags & IFF_PROMISC;
 
 	nat_rmw(p, FFCR, FFCR_UNKNOWN_UC2CPU,
-		ndev->flags & IFF_PROMISC ? FFCR_UNKNOWN_UC2CPU : 0);
+		promisc ? FFCR_UNKNOWN_UC2CPU : 0);
+	/* ~4000 table writes: not under the address lock this runs in */
+	if (promisc != p->all_vids)
+		schedule_work(&p->vlan_work);
+}
+
+static void nat_vlan_work(struct work_struct *work)
+{
+	struct nat_priv *p = container_of(work, struct nat_priv, vlan_work);
+
+	rtnl_lock();	/* as the VID callbacks */
+	nat_vlan_all(p, p->ndev->flags & IFF_PROMISC);
+	rtnl_unlock();
 }
 
 static const struct net_device_ops nat_netdev_ops = {
@@ -1375,6 +1467,8 @@ static const struct net_device_ops nat_netdev_ops = {
 	.ndo_validate_addr	= eth_validate_addr,
 	.ndo_set_mac_address	= nat_set_mac_address,
 	.ndo_set_rx_mode	= nat_set_rx_mode,
+	.ndo_vlan_rx_add_vid	= nat_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid	= nat_vlan_rx_kill_vid,
 	.ndo_eth_ioctl		= phy_do_ioctl_running,
 };
 
@@ -1413,8 +1507,8 @@ static int nat_dbg_show(struct seq_file *m, void *v)
 		{ "PSRP5", PSRP(NAT_PORT) }, { "P5GMIICR", P5GMIICR },
 		{ "SSIR", SSIR }, { "PVCR2", PVCR(NAT_PORT) },
 		{ "CPUIMCR", CPUIMCR }, { "CPUIMTTR0", CPUIMTTR(0) },
-		{ "CPUIMPNTR0", CPUIMPNTR(0) }, { "CPUIMPNTR1", CPUIMPNTR(4) },
-		{ "CPUIMTTR2", CPUIMTTR(6) }, { "CPUIMPNTR2", CPUIMPNTR(6) },
+		{ "CPUIMPNTR0", CPUIMPNTR0 }, { "CPUIMPNTR1", CPUIMPNTR1 },
+		{ "CPUIMTTR2", CPUIMTTR(6) }, { "CPUIMPNTR2", CPUIMPNTR2 },
 	};
 	struct nat_priv *p = m->private;
 	unsigned int i;
@@ -1451,6 +1545,7 @@ static int nat_probe(struct platform_device *pdev)
 	p->ndev = ndev;
 	spin_lock_init(&p->tx_lock);
 	INIT_WORK(&p->reset_work, nat_reset_work);
+	INIT_WORK(&p->vlan_work, nat_vlan_work);
 	platform_set_drvdata(pdev, p);
 
 	p->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
@@ -1504,7 +1599,7 @@ static int nat_probe(struct platform_device *pdev)
 	ndev->netdev_ops = &nat_netdev_ops;
 	ndev->ethtool_ops = &nat_ethtool_ops;
 	ndev->hw_features = NETIF_F_RXCSUM;
-	ndev->features = NETIF_F_RXCSUM;
+	ndev->features = NETIF_F_RXCSUM | NETIF_F_HW_VLAN_CTAG_FILTER;
 	p->rx_usecs = NAT_RX_USECS;
 	p->rx_frames = NAT_RX_FRAMES;
 	p->tx_usecs = NAT_TX_USECS;
@@ -1543,7 +1638,11 @@ static void nat_remove(struct platform_device *pdev)
 
 	debugfs_remove(p->dbg);
 	cancel_work_sync(&p->reset_work);
+	cancel_work_sync(&p->vlan_work);
 	unregister_netdev(p->ndev);
+	/* closing on the way out may have queued them again */
+	cancel_work_sync(&p->reset_work);
+	cancel_work_sync(&p->vlan_work);
 	netif_napi_del(&p->napi);
 	nat_power_off(p);
 	of_node_put(p->phy_np);
