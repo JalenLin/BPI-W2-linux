@@ -50,6 +50,7 @@ container, the images and the board access scripts. Read
   must not reset or re-clock something PiKVM depends on. The second RJ45
   in particular must not take the embedded PHY away from `eth0` (see its
   notes).
+- **Sync SB2 before handing memory to a DMA master** (see docs/board-and-tooling.md): the BSP did it inside `wmb()`, mainline does not.
 - **Keep the system clean**: dependencies go into Docker containers, not
   onto the host.
 - **Verify on the board before claiming anything works**, and say exactly

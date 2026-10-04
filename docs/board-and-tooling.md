@@ -40,6 +40,26 @@ Registers of a block whose clock is gated read `0xdeadbeef`. **Do not write
 registers by hand unless you know what is behind them** -- and never the
 PMIC (see AGENTS.md).
 
+## Read this before writing any DMA driver: SB2
+
+The RTD129x bus bridge, SB2, **holds CPU writes to DDR back until it is
+told to sync**. A barrier alone does not get them out. Realtek's kernel
+hides this inside arm64 `wmb()` (`CONFIG_RTK_RBUS_BARRIER`: every `wmb()`
+writes SB2's sync register, `0x9801a020`). Mainline's `wmb()` does not.
+So any driver ported from the BSP silently loses that flush.
+
+What it costs: the eMMC DMAC fetched stale descriptors and corrupted
+memory. `eth0`'s transmitter wedged under load, with nothing in the logs.
+See `../bpiw2_pikvm/docs/09-mainline-bringup.md` §14 and §21.
+
+What to do: after writing descriptors, and buffers the device will read,
+and before the doorbell, write the SB2 sync register. Get it through the
+`realtek,sb2` syscon (`syscon_regmap_lookup_by_phandle(np, "realtek,sb2")`,
+then `regmap_write(sb2, 0x20, 0)`). `emmc-rtd129x.c` and `r8169soc.c` in
+the PiKVM repository do it this way. Test any DMA driver under concurrent
+DMA load (network + eMMC + SD), not just alone: the eth0 stall needed all
+three.
+
 ## Building a driver here
 
 External modules, built against the PiKVM kernel tree, in its container:
