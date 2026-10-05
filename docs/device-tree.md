@@ -151,8 +151,17 @@ from the eMMC and loads the DTB from a raw slot at 16 MiB, which
 renaming `.prev` back: it needs booting from an SD card and rewriting the
 slot. So: diff the new DTB against the installed one first, **ask the
 user**, keep `.prev`, and never reboot the board with an SD card in (it
-would boot from the card). Agents running in Claude Code's auto mode are
-refused this step; the user does it. In the PiKVM tree: `kernel/mainline/rtd1296-bananapi-w2.dts`, then
+would boot from the card). Claude Code's auto mode refuses this step
+unless the user allows it.
+
+Done on 2026-10-05: the new DTB (the node appended to the PiKVM board DTS,
+uncommitted there) installed with `.prev` kept, bootsync wrote only the
+DTB slot and its read-back matched; after a power cycle the board booted
+from the eMMC, `ethernet@60000` came from the DTB, and the driver probed
+without the overlay (link up at 1 Gbps, flow control rx/tx). Phandles of
+the live tree then: GIC 1, `crt_clk` 13, `reset1` 15, `sb2` 17, `reset4`
+25; the MISC GPIO controller has none. `scripts/install-dtb.sh` does the
+same install with every check (`--rollback` puts `.prev` back). In the PiKVM tree: `kernel/mainline/rtd1296-bananapi-w2.dts`, then
 `make kernel-mainline` and `scripts/push-kernel-mainline.sh`
 (docs/board-and-tooling.md, "Graduating a driver"); `CHECK_DTBS=1` runs
 dt-validate there.
