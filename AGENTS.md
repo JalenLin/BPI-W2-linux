@@ -26,12 +26,20 @@ files for a particular userland: no PiKVM overlay files, udev rules, systemd
 `.link`/`.network` files or distro scripts as part of a feature. A driver
 going into the PiKVM image is optional, not the goal.
 
+**This repository builds the kernel itself** (since 2026-10-05,
+[docs/kernel-build.md](docs/kernel-build.md)): the build container
+(`docker/`), the upstream tree (`vendor/linux`, v6.18.55, fetched), the patch
+series (`kernel/patches/`), whole new kernel files (`kernel/src/`), the config
+fragment (`kernel/configs/`) and the board DTS (`dts/board/`). Those kernel
+files were imported from the PiKVM port at commit `3398bdd`; a build here
+gives the same `.config` and the byte-identical board DTB.
+
 The PiKVM port lives in a sibling repository, `../bpiw2_pikvm`
-(GitHub `JalenLin/BananaPi_W2_PiKVM`, branch `kernel-6.18`). It is this
-repository's **build and test base**, not its target: the kernel tree, the
-board device tree, the toolchain container, the image the board runs and the
-board access scripts come from there. Read
-[docs/board-and-tooling.md](docs/board-and-tooling.md) before building.
+(GitHub `JalenLin/BananaPi_W2_PiKVM`, branch `kernel-6.18`). It is still the
+**test base**: the image the board runs and the board access scripts
+(`scripts/board-ssh.sh`) come from there. Read
+[docs/board-and-tooling.md](docs/board-and-tooling.md) before testing on the
+board.
 
 ## Working rules (non-negotiable)
 
@@ -67,11 +75,13 @@ board access scripts come from there. Read
 
 ## Git
 
-- Commit author e-mail: `jalen.lin@gmail.com`.
+- Commit author: `JalenLin <jalen.lin@gmail.com>` (set in this repository's
+  local git config).
 - Commit when a piece works or when a finding is worth keeping. Commit
   messages: a short subject, then what and why.
-- This repository has no remote yet. Do not create one or push anywhere
-  without the user's say-so.
+- Remote: `origin` = `git@github.com:JalenLin/BPI-W2-linux.git`, **private**
+  (created 2026-10-05 at the user's request). Push only when the user says
+  so; do not make it public or add other remotes without the user.
 - In `../bpiw2_pikvm`, keep `main` and `kernel-6.18` separate (never merge),
   and touch it only when the user wants a driver here in that image (see
   "Graduating a driver" in docs/board-and-tooling.md).
@@ -80,8 +90,9 @@ board access scripts come from there. Read
 
 | Path | What |
 |---|---|
-| `drivers/<feature>/` | One directory per driver, built as an external module against the PiKVM kernel tree |
-| `dts/` | Device-tree fragments for the board; `dts/bindings/` their DT bindings (docs/device-tree.md) |
+| `docker/`, `kernel/`, `vendor/linux` | The kernel build: container, patches, new files, config fragment; the fetched tree (gitignored) |
+| `drivers/<feature>/` | One directory per driver, built as an external module against `vendor/linux` |
+| `dts/` | Device-tree fragments for the board; `dts/board/` the board DTS; `dts/bindings/` the DT bindings (docs/device-tree.md) |
 | `scripts/` | Build and deploy helpers |
 | `scripts/board/` | Tests and tools that run on the board; `scripts/board-tools.sh` puts them there (docs/testing.md) |
 | `docs/` | Per-feature notes: what the hardware is, where the BSP code is, what is known, what has been tried |

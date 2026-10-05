@@ -27,3 +27,4 @@ authorized_keys
 /drivers/ir/ir-overlay.dtso
 /drivers/ir/rc-dev/
 __pycache__/
+/vendor/

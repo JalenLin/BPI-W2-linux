@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+config RTD129X_ACPU
+	tristate "Realtek RTD129x audio CPU RPC"
+	depends on ARCH_REALTEK || COMPILE_TEST
+	depends on OF
+	select GENERIC_ALLOCATOR
+	select AUXILIARY_BUS
+	help
+	  The RPC to the audio firmware that the BSP u-boot starts on the
+	  RTD1295/RTD1296 audio CPU. The firmware owns the audio hardware,
+	  including the HDMI receiver's audio input.
+
+config SND_RTD129X_HDMIRX
+	tristate "Realtek RTD129x HDMI receiver audio"
+	depends on RTD129X_ACPU && SND
+	select SND_PCM
+	help
+	  The audio of the RTD1295/RTD1296 HDMI input, captured by the audio
+	  firmware, as an ALSA capture device.
+
+config RTD129X_VO
+	tristate "Realtek RTD129x video output"
+	depends on RTD129X_ACPU && DRM && OF_RESERVED_MEM
+	select DRM_CLIENT_SELECTION
+	select DRM_DISPLAY_DP_HELPER
+	select DRM_DISPLAY_HELPER
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	help
+	  The RTD1295/RTD1296 video output, which the audio firmware runs,
+	  as a DRM device with one plane, at the mode the boot loader set
+	  (1080p60 on the BPI-W2). Gives a console on HDMI through DRM's
+	  fbdev emulation; the DisplayPort output, when something is
+	  plugged into it, shows the same.
