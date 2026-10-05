@@ -563,7 +563,7 @@ live (`ndo_set_mac_address` rewrites netif entry 0, through which frames
 for us reach the CPU; verified: loop test clean after a live change).
 
 Tried and dropped (2026-10-05): eth1 = eth0 + 1 through a udev rule and a
-script in a PiKVM-style overlay (commit f7bf81a). It worked on two loads
+script in a PiKVM-style overlay (commit 005b038). It worked on two loads
 (same address, same DHCP lease), but it ties the feature to one userland,
 which this project avoids (AGENTS.md, "Scope"). eth0's address in the
 PiKVM image comes from udev and machine-id too, so the kernel cannot
