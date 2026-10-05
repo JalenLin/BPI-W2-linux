@@ -1,8 +1,8 @@
 # PCIe
 
 Status (2026-10-05): BSP read, hardware questions written down below; no
-driver yet. No card: both slots are M.2 **E-key** sockets and the user has
-no E-key card. Read "The outbound window" before choosing one.
+driver yet. No card: both slots are M.2 **E-key** sockets and no E-key
+card was at hand. Read "The outbound window" before choosing one.
 
 ## Hardware
 

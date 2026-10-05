@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] mmc: host: add the Realtek RTD129x SD host
 
 The driver itself is kept outside the kernel tree, in
-kernel/mainline/sdmmc-rtd129x.c, and copied in by
-scripts/build-kernel-mainline.sh -- same reasoning as the board .dts and the
+kernel/src/sdmmc-rtd129x.c, and copied in by
+scripts/build-kernel.sh -- same reasoning as the board .dts and the
 irq mux. These two build-system lines do not change, so they are a patch.
 
 diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig

@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] irqchip: add the Realtek RTD1295/RTD1296 peripheral irq mux
 
 The driver itself is kept outside the kernel tree, in
-kernel/mainline/irq-rtd129x.c, and copied in by
-scripts/build-kernel-mainline.sh -- same reasoning as the board .dts: it is
+kernel/src/irq-rtd129x.c, and copied in by
+scripts/build-kernel.sh -- same reasoning as the board .dts: it is
 still changing, and regenerating a 300-line patch on every edit is noise.
 These two build-system lines do not change, so they are a patch.
 

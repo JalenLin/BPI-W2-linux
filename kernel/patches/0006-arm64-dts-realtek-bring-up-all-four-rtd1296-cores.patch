@@ -1,4 +1,4 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] arm64: dts: realtek: bring up all four RTD1296 cores
 
 rtd1296.dtsi declares four Cortex-A53s with no enable-method, so the kernel

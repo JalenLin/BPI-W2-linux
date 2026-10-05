@@ -2,7 +2,7 @@
 #
 # Realtek RTD129x HDMI receiver, from Realtek's 4.9 BSP
 # (drivers/media/platform/rtk_hdmirx/rtd129x). Copied into the kernel tree
-# by scripts/build-kernel-mainline.sh.
+# by scripts/build-kernel.sh.
 #
 # Left out of the BSP's set: HDCP 2.2 and the TEE HDCP 1.4 path, which need
 # Realtek's closed TEE, and the two EDID helpers the BSP never built either.

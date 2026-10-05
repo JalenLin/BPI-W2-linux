@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] arm64: dts: realtek: build the Banana Pi BPI-W2 dtb
 
 The board .dts itself is kept outside the kernel tree, in
-kernel/mainline/rtd1296-bananapi-w2.dts, and copied in by
-scripts/build-kernel-mainline.sh. It changes on nearly every bring-up step,
+dts/board/rtd1296-bananapi-w2.dts, and copied in by
+scripts/build-kernel.sh. It changes on nearly every bring-up step,
 so carrying it as a patch would mean regenerating that patch constantly.
 This Makefile line does not change, so it is a patch.
 

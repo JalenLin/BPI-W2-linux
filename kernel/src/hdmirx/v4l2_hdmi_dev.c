@@ -75,7 +75,8 @@ int hdmi_stream_on;
  * The DDC pins are ISO pads 20 and 26, which reset to GPIO. Their mux is
  * bits 3:0 of MUXPAD 0x314 and must be 0b0101 (I2C6), or every EDID read
  * the source makes is NAKed and it falls back to 1024x768 DVI -- see
- * docs/04-hdmi-rx-bringup.md, blocker 3. Mainline has no RTD129x pinctrl.
+ * the PiKVM port's notes (docs/04-hdmi-rx-bringup.md, blocker 3). Mainline
+ * has no RTD129x pinctrl.
  */
 #define ISO_GPIO_DIR		0x100
 #define ISO_GPIO_DATO		0x104

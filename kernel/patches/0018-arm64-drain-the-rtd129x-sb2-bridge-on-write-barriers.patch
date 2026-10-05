@@ -1,4 +1,4 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] arm64: drain the RTD129x SB2 bridge on write barriers
 
 The RTD129x's SB2 bridge holds CPU writes to DDR back until its sync
@@ -10,7 +10,7 @@ writel() starts with dma_wmb() and its wmb() is a dsb alone.
 
 Do as Realtek did: wmb() and writel()'s barrier also write SB2's sync
 register when rtd_sb2_sync_reg is set. rtd129x-sb2-sync.c, kept in
-kernel/mainline and copied in by scripts/build-kernel-mainline.sh, sets
+kernel/src and copied in by scripts/build-kernel.sh, sets
 it on RTD129x only; it stays NULL elsewhere. Code that links on its own
 (the nVHE hypervisor, the EFI stub and early PI code, the vDSO) is left
 as it was.

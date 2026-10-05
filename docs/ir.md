@@ -1,7 +1,7 @@
 # IR receiver
 
 Status (2026-10-05): **works on the board** (`kernel/src/rtd1295-ir.c`,
-rc-core, raw mode), tested with the user's air-conditioner remote, through
+rc-core, raw mode), tested with an air-conditioner remote, through
 the development overlay and from the board DTB. Builds clean (`W=1`,
 checkpatch --strict). DT in `dts/ir.dtsi`, binding validated. Needs an IR
 remote to test: any household remote works (NEC, RC-5, RC-6 and Sony are
@@ -99,7 +99,7 @@ python3 /root/ir-watch.py 30   # raw pulses from /dev/lirc0, scancodes, keys
 sh /root/ir-up.sh down
 ```
 
-With an air-conditioner remote (what the user has, 2026-10-05): its
+With an air-conditioner remote (the one at hand, 2026-10-05): its
 frames carry the whole state, often 100-200+ bits in a vendor protocol, so
 rc-core's decoders give no scancode. `ir-watch.py` decodes any
 pulse-distance frame (equal marks, short/long spaces: NEC and most
@@ -123,7 +123,7 @@ missing clock name and a bogus property are reported. The board DTB with
 
 ## Tried
 
-2026-10-05, development overlay, development rc-core, the user's
+2026-10-05, development overlay, development rc-core, an
 air-conditioner remote:
 
 - Probe: `rc0` with `/dev/lirc0` and an input device; the registers read

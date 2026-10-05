@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /**************************************************************
 // Spec Version                  : 1.0
 // Parser Version                : DVR_Parser_6.11(120105)

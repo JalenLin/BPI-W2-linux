@@ -1,4 +1,4 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] media: coda: add the Realtek RTD129x CODA980 (VE1)
 
 VE1 on the RTD1295/1296 is a Chips&Media CODA980 (product code 0x9800)

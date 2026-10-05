@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] regulator: add the GMT G2227 PMIC
 
 The PMIC of the Realtek RTD129x boards, here for the CPU rail. The
 driver, g2227-regulator.c, is kept outside the kernel tree in
-kernel/mainline and copied in by scripts/build-kernel-mainline.sh; these
+kernel/src and copied in by scripts/build-kernel.sh; these
 lines hook it in.
 
 diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig

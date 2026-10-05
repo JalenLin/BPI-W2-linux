@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*===========*@date:2015/3/6===========*/
 
 #ifndef _DFE_HDMI_RX_PHY_REG_H_INCLUDED_

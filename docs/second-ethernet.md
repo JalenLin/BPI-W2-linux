@@ -358,7 +358,7 @@ ICMP from eth0 too).
 ### 802.1Q VLANs
 
 At first the test LAN's switch passed only VID 0 (delivered
-untagged) and dropped every other VID; the user then set it to trunk VIDs
+untagged) and dropped every other VID; it was then set to trunk VIDs
 2700-2710. Before any VLAN code, tagged frames from eth1 left with their
 tag intact, and tagged frames for eth1 were discarded at port 5's ingress
 (`rx_port_discards`). With VLAN filtering in the driver
@@ -575,8 +575,8 @@ nvmem cell referenced by both nodes with offsets 0 and 1
 (`nvmem-cells = <&macaddr 0>` / `<&macaddr 1>`), filled from a per-board
 store the boot loader or a factory partition provides (for example
 u-boot's environment `ethaddr` through the `u-boot,env` nvmem layout).
-That needs a per-board address stored somewhere first: the user's call,
-as it means writing the boot loader's environment or a partition.
+That needs a per-board address stored somewhere first: a decision for
+the OS, as it means writing the boot loader's environment or a partition.
 
 **Decision (2026-10-05): for now the kernel keeps a random address**,
 marked `NET_ADDR_RANDOM`, as mainline does for boards with no stored
@@ -594,10 +594,6 @@ for later, once the boot loader and distribution are chosen.
 - RX VLAN tag stripping (`NETIF_F_HW_VLAN_CTAG_RX`): the stack strips the
   tag in software now; the descriptor carries the VLAN fields if it ever
   matters. 802.1ad (S-tags) not tried.
-- Remove what is only for bring-up before upstreaming (`nat_dump()`, the
-  debugfs file).
-- A permanent node: `dts/nat-eth.dtsi` into a board DTS (into the PiKVM
-  image's only if the user wants it there).
 
 A USB 3.0 gigabit adapter remains the no-driver alternative: the PiKVM
 image has `r8152` and `ax88179_178a`.

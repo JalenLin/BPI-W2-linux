@@ -1,4 +1,4 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] watchdog: rtd119x: add a restart handler, advertise ping and timeout
 
 Nothing else can reset the RTD129x, so without a restart handler every

@@ -151,8 +151,7 @@ from the eMMC and loads the DTB from a raw slot at 16 MiB, which
 renaming `.prev` back: it needs booting from an SD card and rewriting the
 slot. So: diff the new DTB against the installed one first, **ask the
 user**, keep `.prev`, and never reboot the board with an SD card in (it
-would boot from the card). Claude Code's auto mode refuses this step
-unless the user allows it.
+would boot from the card).
 
 Done on 2026-10-05: the new DTB (the node appended to the PiKVM board DTS,
 uncommitted there) installed with `.prev` kept, bootsync wrote only the

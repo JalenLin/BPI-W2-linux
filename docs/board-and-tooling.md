@@ -117,14 +117,9 @@ CLK_EN2) and `<&iso_clk N>`, interrupts go through `&misc_irq_mux` /
 
 ### Graduating a driver
 
-Optional: this repository's drivers are not made for the PiKVM image (see
-AGENTS.md, "Scope"). When the user wants one in that image anyway, move it into the PiKVM
-repository the way its other drivers are kept there: the source in
-`kernel/mainline/`, a patch in `patches/linux-mainline/` that adds the
-Kconfig/Makefile lines, the copy line in `scripts/build-kernel-mainline.sh`,
-the option in `kernel/mainline/bpiw2.config`, the node in the board DTS, and
-a section in its docs/09 and docs/10. That happens on its `kernel-6.18`
-branch, with the user's agreement.
+The PiKVM image keeps its own kernel and board DTS at what PiKVM needs;
+the drivers here are part of this kernel, not of that image. To test them,
+the board runs this kernel under the PiKVM rootfs (docs/kernel-build.md).
 
 ### Testing on the board
 

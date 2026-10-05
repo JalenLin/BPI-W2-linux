@@ -1,8 +1,8 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] media: add the Realtek RTD129x HDMI receiver
 
-The driver itself is kept outside the kernel tree, in kernel/mainline/hdmirx,
-and copied in by scripts/build-kernel-mainline.sh; it carries its own
+The driver itself is kept outside the kernel tree, in kernel/src/hdmirx,
+and copied in by scripts/build-kernel.sh; it carries its own
 Kconfig and Makefile. These two lines hook that directory in.
 
 diff --git a/drivers/media/platform/Kconfig b/drivers/media/platform/Kconfig

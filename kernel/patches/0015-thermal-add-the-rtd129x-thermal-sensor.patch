@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] thermal: add the Realtek RTD129x thermal sensor
 
 The RTD1295/RTD1296 has a temperature sensor next to the CPUs. The
 driver, rtd129x-thermal.c, is kept outside the kernel tree in
-kernel/mainline and copied in by scripts/build-kernel-mainline.sh; these
+kernel/src and copied in by scripts/build-kernel.sh; these
 lines hook it in.
 
 diff --git a/drivers/thermal/Kconfig b/drivers/thermal/Kconfig

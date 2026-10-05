@@ -1,4 +1,4 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] arm64: dts: realtek: wire up the RTD129x interrupt muxes
 
 rtd129x.dtsi carries exactly two interrupts today -- the GIC's own

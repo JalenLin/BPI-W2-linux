@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 // This file is generated using the spec version 1.39, firmware template version 1.39and SRIF Parser                                                                                source code SVN rev:802                    Version flow no.:1.1.66
 #ifndef _DDC_REG_H_INCLUDED_
 #define _DDC_REG_H_INCLUDED_

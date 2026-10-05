@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] clk: add the Realtek RTD129x CPU clock
 
 PLL_SCPU and its output divider, so that cpufreq-dt can scale the CPUs.
 The driver, clk-rtd129x-scpu.c, is kept outside the kernel tree in
-kernel/mainline and copied in by scripts/build-kernel-mainline.sh; these
+kernel/src and copied in by scripts/build-kernel.sh; these
 lines hook it in.
 
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig

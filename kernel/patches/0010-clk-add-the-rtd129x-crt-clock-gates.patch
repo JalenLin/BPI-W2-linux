@@ -1,9 +1,9 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] clk: add the Realtek RTD129x CRT clock gates
 
 The driver itself is kept outside the kernel tree, in
-kernel/mainline/clk-rtd129x-crt.c, and copied in by
-scripts/build-kernel-mainline.sh -- same as the other drivers here.
+kernel/src/clk-rtd129x-crt.c, and copied in by
+scripts/build-kernel.sh -- same as the other drivers here.
 
 diff --git a/drivers/clk/Kconfig b/drivers/clk/Kconfig
 index 3a1611008..3276459fa 100644

@@ -1,4 +1,4 @@
-From: BPI-W2 PiKVM <jalen.lin@gmail.com>
+From: JalenLin <jalen.lin@gmail.com>
 Subject: [PATCH] arm64: smp_spin_table: allow an MMIO cpu-release-addr
 
 The spin-table boot protocol says cpu-release-addr is a memory location, and

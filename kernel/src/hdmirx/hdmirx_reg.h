@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * hdmirx_reg.h - RTK hdmi rx driver header file
  *

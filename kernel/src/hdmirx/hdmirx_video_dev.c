@@ -461,8 +461,8 @@ static const struct v4l2_file_operations hdmirx_fops = {
 };
 
 /*
- * sysfs, next to the video node. kvmd's udev rule and this project's
- * hdmirx-info / hdmirx-capture find the device by hdmirx_video_info; the
+ * sysfs, next to the video node. Userland (PiKVM's kvmd udev rule, its
+ * hdmirx-info / hdmirx-capture tools) finds the device by hdmirx_video_info; the
  * *_state files replace the BSP's Android switch devices
  * (/sys/class/switch/rx_video/state and friends).
  */

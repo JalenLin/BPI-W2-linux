@@ -139,7 +139,7 @@ exists).
   SSD region checksummed 4 times under that load equal to the quiet read.
   No SATA or MMC error in dmesg.
 
-- **Writes** (the user allowed overwriting this SSD; `sata-write.sh`): a
+- **Writes** (the test SSD's contents were expendable; `sata-write.sh`): a
   256 MiB random pattern written at 16 places over the disk, the last 8
   while `dma-stress.sh` ran (TCP 882 + 532 Mbit/s, loop tests 1200/1200,
   eMMC 111 MB/s, SD 19.7 MB/s, no error counter moved): **all 16 read
