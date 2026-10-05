@@ -186,4 +186,12 @@ exists).
     middle): its port clash, missing eth1, one FCS error and 204 MB/s are
     discarded; the board test scripts now take a lock.
 
+  - Taking the drive off with the DTB node: `phy-rtd1295-sata` cannot be
+    unloaded while the built-in ahci driver is bound (it holds the PHYs),
+    so `sata-up.sh down` unbinds ahci first (its clocks and resets are
+    SATA's alone, unlike the SD host's). The kernel then logs
+    "Synchronizing SCSI cache" and "Stopping disk", the regulator turns
+    off (GPIO 56 low, 0 users), and every SATA clock and reset is back to
+    its boot value. The SSD can then be pulled with the board running.
+
 Not done yet: hot-plug, a long soak.
