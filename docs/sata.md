@@ -156,9 +156,14 @@ exists).
   SATA/SGMII select and CN12's power (GPIO 56 too) work. But the drive
   answered as "Generic FCR SATA Loader Loader Device", 8192 sectors (4
   MiB), UDMA/100 -- the JMicron controller's ROM loader: the SSD's
-  firmware did not load. The same after 85 s more of power. Most likely
-  the abrupt power-off after writes (no STANDBY IMMEDIATE); being checked
-  on another PC. Lesson in docs/testing.md.
+  firmware did not load. The same after 85 s more of power, and the same
+  on the development host through a USB adapter, so the drive, not the
+  board. Most likely the abrupt power-off after writes (no STANDBY
+  IMMEDIATE). **It recovered**: left powered and idle on the host for
+  about 30 minutes, then unplugged and plugged back in, it came back as
+  the ADATA SX930, 240 GB, with the GPT and the ext4 written by
+  `sata-fs.sh` still there. (I had expected a loader-mode drive not to
+  recover this way; it did.) Lesson in docs/testing.md.
 
 Not done yet: reads and writes on port 0 (needs a working drive), the
 regulator path of `dts/sata.dtsi` (needs that DTB), hot-plug, a long
