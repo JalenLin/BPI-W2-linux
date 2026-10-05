@@ -16,6 +16,9 @@ and the note for the feature:
 - [IR receiver](docs/ir.md)
 - [Second RJ45](docs/second-ethernet.md)
 
+How a driver gets its device-tree node: [docs/device-tree.md](docs/device-tree.md).
+How drivers are tested on the board: [docs/testing.md](docs/testing.md).
+
 The drivers build as external modules against the PiKVM repository's
 kernel tree (expected at `../bpiw2_pikvm`):
 

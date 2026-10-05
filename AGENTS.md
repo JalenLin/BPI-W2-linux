@@ -81,9 +81,9 @@ board access scripts come from there. Read
 | Path | What |
 |---|---|
 | `drivers/<feature>/` | One directory per driver, built as an external module against the PiKVM kernel tree |
-| `dts/` | Device-tree fragments for the board, to be merged into the board DTS when testing |
+| `dts/` | Device-tree fragments for the board; `dts/bindings/` their DT bindings (docs/device-tree.md) |
 | `scripts/` | Build and deploy helpers |
-| `scripts/board/` | Test tools that run on the board (MMIO peek, PHY registers, frame loop test, TCP throughput) |
+| `scripts/board/` | Tests and tools that run on the board; `scripts/board-tools.sh` puts them there (docs/testing.md) |
 | `docs/` | Per-feature notes: what the hardware is, where the BSP code is, what is known, what has been tried |
 
 ## How to work on a feature
@@ -98,7 +98,8 @@ board access scripts come from there. Read
    `drivers/nat-eth/` does; docs/board-and-tooling.md), or in the board
    DTS in `../bpiw2_pikvm` on a local, uncommitted change (or a work
    branch) -- installing a new DTB means asking first.
-5. Build, push and test on the board (docs/board-and-tooling.md).
+5. Build, push and test on the board (docs/board-and-tooling.md,
+   docs/testing.md).
 6. Each feature needs real hardware to test: a SATA disk, a PCIe card, an
    IR remote, a cable in the second RJ45. As of 2026-10-05 only the
    second RJ45 has its cable (to the same LAN as eth0); ask before

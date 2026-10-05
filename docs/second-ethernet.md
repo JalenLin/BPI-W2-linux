@@ -278,6 +278,9 @@ entry (`_rtl8651_asicTableSize`): L2 2, netif 5, VLAN 3, ACL 11.
 
 ## Testing it
 
+The procedures, the scripts and the traps: docs/testing.md. The node and
+its overlay: docs/device-tree.md.
+
 The base DTB has no `__symbols__`, so the node goes in as a runtime
 overlay with the running board's phandles:
 

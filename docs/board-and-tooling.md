@@ -102,25 +102,9 @@ rebuild here.
 
 ### Device tree
 
-**Without touching the board's boot partition**: apply the node as a
-runtime overlay from a small module (the kernel has `CONFIG_OF_OVERLAY`).
-The base DTB has no `__symbols__`, so the overlay cannot use labels; it
-carries the running board's phandles instead, read from
-`/proc/device-tree/.../phandle`. `drivers/nat-eth/` does this:
-`nat-overlay.dtso.in` (template), `scripts/build-nat-overlay.sh` (fills in
-the phandles), `nat-overlay.c` (applies it with `of_overlay_fdt_apply()`
-on insmod, removes it on rmmod; kbuild turns the `.dtso` into a
-`.dtbo.o`). The platform bus binds the driver to the new node as soon as
-both are loaded. Reuse the pattern for the next driver.
-
-For the image, the node goes into the board DTS,
-`../bpiw2_pikvm/kernel/mainline/rtd1296-bananapi-w2.dts`. Keep the node in
-`dts/<name>.dtsi` here. While testing, paste it into the board DTS as a
-local, uncommitted change (or on a branch of that repository), then:
-
-```sh
-(cd ../bpiw2_pikvm && make kernel-mainline && scripts/push-kernel-mainline.sh --reboot)
-```
+A new driver's node is first tried as a runtime overlay (no new DTB on the
+board), then goes into a board DTS; docs/device-tree.md has both, the
+binding and its validation, worked through for the second RJ45.
 
 The mainline headers for this SoC: `dt-bindings/reset/realtek,rtd1295.h`
 (`RTD1295_RSTN_*`), the clocks are `<&crt_clk N>` (bit N of CLK_EN1, N-32 of
@@ -141,9 +125,9 @@ branch, with the user's agreement.
 
 ### Testing on the board
 
-`scripts/board/` holds small Python tools that run on the board (the image
-has no tcpdump, ethtool or iperf3): an MMIO peek, a PHY register reader, a
-frame loop test between two NICs, a TCP throughput test. See its README.
+docs/testing.md: the setup (tools under `/root` via
+`scripts/board-tools.sh`, the far ends, the LAN), the tests with their
+scripts and pass criteria, the traps met, the safety rules.
 
 ## Where the reference material is
 
