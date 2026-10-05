@@ -5,6 +5,13 @@ FROM debian:trixie-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# A closer Debian mirror if the default CDN is slow from here, e.g.
+# make builder DEBIAN_MIRROR=http://free.nchc.org.tw/debian
+ARG DEBIAN_MIRROR=
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+        sed -i "s#^URIs: http://deb.debian.org/debian\$#URIs: $DEBIAN_MIRROR#" /etc/apt/sources.list.d/debian.sources; \
+    fi
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bc \
         bison \

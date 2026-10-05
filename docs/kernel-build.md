@@ -8,6 +8,7 @@ imported from there at commit `3398bdd` (branch `kernel-6.18`).
 
 ```sh
 make builder          # the container image bpiw2-kernel/builder:trixie, once
+                      # (DEBIAN_MIRROR=http://free.nchc.org.tw/debian if the CDN is slow)
 make kernel-sources   # vendor/linux: v6.18.55 from kernel.org + kernel/patches
 make kernel           # Image, the board DTB, modules (in vendor/linux)
 make dtbs             # just the DTBs; CHECK_DTBS=1 scripts/build-kernel.sh validates
@@ -45,3 +46,10 @@ Dockerfile; this repository's own image was still downloading):
   `vendor/linux` with vermagic `6.18.55-bpiw2 SMP preempt mod_unload
   aarch64`, and load on the board's running kernel (eth1 up and pinging,
   `rc0` registered, SATA probing with links down and unloading cleanly).
+- Then with this repository's own image (`make builder`): the default
+  Debian CDN gave the container ~90 KB/s from here (2.4 MB/s from the host
+  itself), so the image was built through the NCHC mirror
+  (`DEBIAN_MIRROR`, 4 min 18 s). Same tools as the PiKVM image (GCC
+  14.2.0-19, DTC 1.7.2, dtschema 2026.9). `make clean` and a full build:
+  3 min 40 s, Image 43612672 bytes, DTB md5 `f9a5e9b3...` again, 1416
+  modules; the three drivers rebuild clean.

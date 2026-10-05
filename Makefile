@@ -2,7 +2,8 @@
 .PHONY: builder kernel-sources kernel dtbs
 
 builder:
-	docker build -t bpiw2-kernel/builder:trixie -f docker/builder.Dockerfile docker/
+	docker build -t bpiw2-kernel/builder:trixie \
+		--build-arg DEBIAN_MIRROR=$(DEBIAN_MIRROR) -f docker/builder.Dockerfile docker/
 
 kernel-sources:
 	scripts/fetch-kernel.sh
