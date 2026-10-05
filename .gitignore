@@ -26,3 +26,4 @@ authorized_keys
 /drivers/sata/sata-overlay.dtso
 /drivers/ir/ir-overlay.dtso
 /drivers/ir/rc-dev/
+__pycache__/
