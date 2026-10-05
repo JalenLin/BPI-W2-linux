@@ -1,12 +1,13 @@
 # SATA
 
-Status (2026-10-05): driver written, **not tried on the board yet**.
+Status (2026-10-05): **works on the board, read-only so far** (see
+"Tried"); write tests wait for the user's go-ahead.
 Mainline's generic AHCI driver (`ahci_platform`, built in) does the
 controller; `drivers/sata/phy-rtd1295-sata.c` is the PHY. Builds clean
 (`W=1`, checkpatch --strict); its PHY register writes are, word for word,
 what the BSP writes on this chip (checked by re-encoding the tables). DT
-in `dts/sata.dtsi`, binding validated. A small 2.5" SATA SSD is available
-for testing; connecting it needs the board powered off.
+in `dts/sata.dtsi`, binding validated. Test drive: ADATA SX930 240 GB
+on the connector nearer the board edge, which is **port 1** (`ata2`).
 
 ## Hardware
 
@@ -107,4 +108,35 @@ exists).
 
 ## Tried
 
-Nothing on the board yet.
+2026-10-05, development overlay (drive power by GPIO hog), first try:
+
+- `sata-up.sh`: PHY driver probes ("2 PHY(s), chip revision 0x30000"),
+  ahci_platform binds (AHCI 1.3.1, 32 slots, 6 Gbps, NCQ, FBS not on these
+  ports), `ports-implemented` forces PI 0 -> 3. Port 0 (nothing
+  connected): link down. Port 1: **link up at 6.0 Gbps**, ADATA SX930
+  identified, LBA48, NCQ depth 32.
+- **First link-up took 18 s** ("link is slow to respond", one "softreset
+  failed (device not ready)"): the hog powered the drive at the same
+  moment the controller probed, and the SSD needed that long after power
+  on. On a reload with the drive already powered: link up in 0.5 s.
+  libata waits on its own; nothing to fix in the driver. (With the
+  regulator of `dts/sata.dtsi` the same wait will happen at every probe
+  from cold.)
+- Unload (`sata-up.sh down`): every SATA reset and clock back exactly to
+  the boot values (`SOFT_RESET1` 0xfffa3357, `CLK_EN1` 0x9bffc571,
+  `CLK_EN2` 0xd9ffe497, `SOFT_RESET4` 0x903f). The hog's removal leaves
+  GPIO 56 high (the drive stays powered).
+- Reads (read-only; the SSD has no partition table and reads zeros):
+  1 MiB direct 322 MB/s (one request at a time), 4 MiB 476, 16 MiB 519,
+  buffered 527 MB/s -- SATA III's practical limit; 4 KiB random reads
+  6548 IOPS at queue depth 1. The same 512 MiB read twice: identical.
+- **Alongside every other DMA master** (`sata-dma.sh`: continuous SSD
+  reads plus `dma-stress.sh` -- TCP both ways on eth0/eth1, eMMC and SD
+  reads, byte-exact loop tests): TCP 836 + 496 Mbit/s, loop tests 1200/1200
+  both ways, eMMC 103 MB/s, SD 17.6 MB/s, no error counter moved, and the
+  SSD region checksummed 4 times under that load equal to the quiet read.
+  No SATA or MMC error in dmesg.
+
+Not done yet: writes (need the user's say-so for this disk), the
+regulator path of `dts/sata.dtsi` (needs that DTB), port 0 with a drive,
+hot-plug, a long soak.
