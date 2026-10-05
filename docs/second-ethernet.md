@@ -4,7 +4,7 @@ Status (2026-10-05): **complete**, as a loadable module,
 `drivers/nat-eth/rtd1295-hwnat.c` (checkpatch --strict clean), with the
 node in the board DTB since 2026-10-05 (installed on the board; the
 change to the PiKVM board DTS is local and uncommitted) -- the driver
-probes from it without the overlay.
+probes from it without the overlay. Four-hour soak passed (docs/testing.md).
 10/100/1000 Mbps, TCP at line rate both ways with CPU load like eth0's,
 802.1Q VLANs, pause, promiscuous mode, RX checksum, interrupt mitigation,
 ethtool (link, pause, coalescing, MIB statistics), recovery from a TX
