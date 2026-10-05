@@ -37,9 +37,11 @@ cp $S/clk-rtd129x-crt.c $S/clk-rtd129x-scpu.c drivers/clk/
 cp $S/g2227-regulator.c drivers/regulator/
 cp $S/rtd129x-thermal.c drivers/thermal/
 cp $S/rtd129x-sb2-sync.c arch/arm64/kernel/
-rm -rf drivers/media/platform/realtek-rtd129x-hdmirx sound/realtek-rtd129x-acpu
-cp -r $S/hdmirx drivers/media/platform/realtek-rtd129x-hdmirx
-cp -r $S/acpu sound/realtek-rtd129x-acpu
+# directories: sources in step (stale ones removed), build products kept --
+# an rm -rf here once dropped hdmirx.ko after a dtbs-only build
+SYNC="rsync -r --checksum --delete --exclude=*.o --exclude=*.ko --exclude=.*.cmd --exclude=*.mod --exclude=*.mod.c --exclude=modules.order"
+$SYNC $S/hdmirx/ drivers/media/platform/realtek-rtd129x-hdmirx/
+$SYNC $S/acpu/ sound/realtek-rtd129x-acpu/
 cp "$S/realtek,rtd1295-irq-mux.yaml" Documentation/devicetree/bindings/interrupt-controller/
 cp $S/rtd1295-hwnat.c drivers/net/ethernet/realtek/
 cp $S/phy-rtd1295-sata.c drivers/phy/realtek/
