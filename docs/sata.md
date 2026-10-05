@@ -1,7 +1,9 @@
 # SATA
 
-Status (2026-10-05): **works on the board, read-only so far** (see
-"Tried"); write tests wait for the user's go-ahead.
+Status (2026-10-05): **works on the board**: 6 Gbps link, reads at
+SATA III's limit, writes verified, ext4, all alongside the other DMA
+masters (see "Tried"). Tested with the development overlay; the
+regulator path of `dts/sata.dtsi` needs that DTB installed.
 Mainline's generic AHCI driver (`ahci_platform`, built in) does the
 controller; `drivers/sata/phy-rtd1295-sata.c` is the PHY. Builds clean
 (`W=1`, checkpatch --strict); its PHY register writes are, word for word,
@@ -137,6 +139,16 @@ exists).
   SSD region checksummed 4 times under that load equal to the quiet read.
   No SATA or MMC error in dmesg.
 
-Not done yet: writes (need the user's say-so for this disk), the
-regulator path of `dts/sata.dtsi` (needs that DTB), port 0 with a drive,
-hot-plug, a long soak.
+- **Writes** (the user allowed overwriting this SSD; `sata-write.sh`): a
+  256 MiB random pattern written at 16 places over the disk, the last 8
+  while `dma-stress.sh` ran (TCP 882 + 532 Mbit/s, loop tests 1200/1200,
+  eMMC 111 MB/s, SD 19.7 MB/s, no error counter moved): **all 16 read
+  back identical**. 307-313 MB/s per copy alone, 206-249 under the load;
+  4 GiB sequential 305 MB/s (16 MiB direct writes, one at a time).
+- **ext4** (`sata-fs.sh`): GPT, one partition, `mkfs.ext4`; 8 x 256 MiB
+  files from two writers at once, with sync, 454 MB/s; after dropping the
+  page cache all 8 read back identical; `fsck.ext4 -f` clean. No SATA or
+  filesystem message in dmesg. The filesystem is left on the SSD.
+
+Not done yet: the regulator path of `dts/sata.dtsi` (needs that DTB),
+port 0 with a drive, hot-plug, a long soak.
