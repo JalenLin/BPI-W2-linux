@@ -24,10 +24,10 @@ The ranges above are from the preprocessed W2 tree
 parameter lists (`phys_a`/`phys_b` for slot 1, `phys` for slot 2), which are
 register writes in Realtek's MDIO encoding. Copy them from there.
 
-Schematic page 8 ("PCIe"): `PCIE1_*` and `PCIE2_*` (TX/RX pairs, clock,
-`CLKREQ`, `RST`), plus WiFi/BT wake lines. Check which physical slot
-(mini-PCIe or M.2) each goes to. Page 15 ("M.2 USB") carries USB and LTE
-signals.
+Schematic sheet 10 "PCIe": `PCIE1_*` and `PCIE2_*` (TX/RX pairs, clock,
+`CLKREQ`, `RST`) to two M.2 E-key sockets (see "On the W2"). Sheet 17
+"M.2 USB" is a third M.2 socket, `CN40` key B (3042, for an LTE modem):
+USB only, no PCIe.
 
 `0x98012000` is the eMMC/NAND/CR pinmux block, also mapped by the PiKVM
 eMMC and SD drivers. Map it without claiming the range, and touch only the
@@ -35,7 +35,7 @@ PCIe bits.
 
 ## On the W2
 
-Both root complexes go to M.2 2230 **E-key** sockets (schematic sheet 9
+Both root complexes go to M.2 2230 **E-key** sockets (schematic sheet 10
 "PCIe": CN7 and CN8, `NGFF2230 (KEY-E)`), with REFCLK, CLKREQ# and PERST#
 each. PERST#: `PCIE1_RST#` = MISC GPIO 16, `PCIE2_RST#` = MISC GPIO 19
 (sheet 2), as BPI's board DTS says. CLKREQ# are the pins' alternate
