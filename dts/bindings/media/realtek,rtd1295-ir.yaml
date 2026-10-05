@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/realtek,rtd1295-ir.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Realtek RTD1295/RTD1296 IR receiver
+
+maintainers:
+  - Jalen Lin <jalen.lin@gmail.com>
+
+description:
+  The IR unit in the RTD1295/RTD1296 ISO block. It samples the receiver
+  module's output into a FIFO (raw mode), which rc-core decodes; it also
+  has hardware decoders, not described here.
+
+allOf:
+  - $ref: rc.yaml#
+
+properties:
+  compatible:
+    const: realtek,rtd1295-ir
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: The unit's clock gate
+      - description: The 27 MHz reference its sampling clock divides
+
+  clock-names:
+    items:
+      - const: bus
+      - const: ref
+
+  resets:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - resets
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/reset/realtek,rtd1295.h>
+
+    ir@98007400 {
+        compatible = "realtek,rtd1295-ir";
+        reg = <0x98007400 0x100>;
+        interrupt-parent = <&iso_irq_mux>;
+        interrupts = <5>;
+        clocks = <&iso_clk 7>, <&osc27M>;
+        clock-names = "bus", "ref";
+        resets = <&iso_reset RTD1295_ISO_RSTN_IR>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&ir_rx_pins>;
+        linux,rc-map-name = "rc-empty";
+    };
+...

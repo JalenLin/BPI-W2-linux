@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+/*
+ * BPI-W2: the IR receiver (docs/ir.md). Appended to the board DTS, which
+ * already has the ISO clock gates and pin mux nodes it refers to.
+ */
+
+&iso_pinmux {
+	/* IR_RX: ISO_MUXPAD0 bits 7:6, function 1 */
+	ir_rx_pins: ir-rx-pins {
+		pinctrl-single,bits = <0x0 0x00000040 0x000000c0>;
+	};
+};
+
+&iso {
+	ir: ir@400 {
+		compatible = "realtek,rtd1295-ir";
+		reg = <0x400 0x100>;
+		interrupt-parent = <&iso_irq_mux>;
+		interrupts = <5>;
+		clocks = <&iso_clk 7>, <&osc27M>;	/* ISO CLK_EN bit 7: IR; sampling */
+		clock-names = "bus", "ref";
+		resets = <&iso_reset RTD1295_ISO_RSTN_IR>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ir_rx_pins>;
+	};
+};
