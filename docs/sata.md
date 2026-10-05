@@ -150,5 +150,16 @@ exists).
   page cache all 8 read back identical; `fsck.ext4 -f` clean. No SATA or
   filesystem message in dmesg. The filesystem is left on the SSD.
 
-Not done yet: the regulator path of `dts/sata.dtsi` (needs that DTB),
-port 0 with a drive, hot-plug, a long soak.
+- **Port 0** (SSD moved to the other connector, CN12, after a power cut
+  **without a clean shutdown** following the write tests): link up at 6.0
+  Gbps and IDENTIFY completes, so PHY 0, its clocks and resets, SB2's
+  SATA/SGMII select and CN12's power (GPIO 56 too) work. But the drive
+  answered as "Generic FCR SATA Loader Loader Device", 8192 sectors (4
+  MiB), UDMA/100 -- the JMicron controller's ROM loader: the SSD's
+  firmware did not load. The same after 85 s more of power. Most likely
+  the abrupt power-off after writes (no STANDBY IMMEDIATE); being checked
+  on another PC. Lesson in docs/testing.md.
+
+Not done yet: reads and writes on port 0 (needs a working drive), the
+regulator path of `dts/sata.dtsi` (needs that DTB), hot-plug, a long
+soak.
