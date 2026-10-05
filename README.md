@@ -5,7 +5,7 @@ on top of the upstream kernel, the board device tree, the drivers mainline
 still lacks, and the toolchain that builds it all. The kernel side of an
 independent OS for the board (the userland could be OpenWrt or Ubuntu); the
 [PiKVM port](https://github.com/JalenLin/BananaPi_W2_PiKVM) is where it
-came from and still the image the board is tested with.
+came from, and its image is what the board runs this kernel under for testing.
 
 ```sh
 make builder          # build container (DEBIAN_MIRROR=... if the Debian CDN is slow)
@@ -18,9 +18,9 @@ make kernel           # Image, the board DTB, modules (the drivers below include
 
 | Block | State | Note |
 |---|---|---|
-| Second RJ45 (NAT engine port 5) | works, in the board DTB, 4-hour soak passed | [docs/second-ethernet.md](docs/second-ethernet.md) |
-| SATA (AHCI + PHY) | works on both ports, in the board DTB | [docs/sata.md](docs/sata.md) |
-| IR receiver | works (raw mode, rc-core), in the board DTB | [docs/ir.md](docs/ir.md) |
+| Second RJ45 (NAT engine port 5) | works, in-tree, 4-hour soak passed | [docs/second-ethernet.md](docs/second-ethernet.md) |
+| SATA (AHCI + PHY) | works on both ports, in-tree | [docs/sata.md](docs/sata.md) |
+| IR receiver | works (raw mode, rc-core), in-tree | [docs/ir.md](docs/ir.md) |
 | PCIe | on hold: no card; a 4 KiB outbound window question | [docs/pcie.md](docs/pcie.md) |
 
 How a driver gets its device-tree node: [docs/device-tree.md](docs/device-tree.md).

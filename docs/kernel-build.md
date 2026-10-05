@@ -64,5 +64,26 @@ build with `CHECK_DTBS=1` passes, the board DTB validates against the
 bindings with no message about its SATA, IR or NAT nodes (patch 0022 lets
 `realtek,rtd1295-ahci` have a reset per port), and is still byte-identical
 (`f9a5e9b3...`). `.config` now differs from the PiKVM kernel's by these
-options, so this kernel's modules are no longer for the PiKVM kernel the
-board runs: testing the in-tree drivers needs this kernel on the board.
+options, so this kernel's modules are no longer for the PiKVM kernel: the
+in-tree drivers are tested with this kernel on the board.
+
+**On the board** (2026-10-05): installed with the debug tools'
+`scripts/install-kernel.sh` (the PiKVM kernel, DTBs and modules kept in
+`/root/kernel-rollback` for `--rollback`; the eMMC's raw slots read back
+equal to the new files), rebooted from the eMMC into it (`#2 ... Oct 5`):
+- the PiKVM image still runs on it: systemd `running`, no failed unit,
+  kvmd, kvmd-nginx, kvmd-otg and kvmd-janus active, the HDMI receiver,
+  its audio and the audio CPU modules loaded;
+- the new drivers come up by themselves: the SATA PHY (built in) and AHCI
+  at 6.9 s, both links down with no disk, the drive power regulator on;
+  `rtd1295-ir` at 10.4 s with LIRC; `rtd1295-hwnat` at 10.6 s, link up at
+  1 Gbps with flow control;
+- the second RJ45's regression run, with the kernel's own module: loop
+  tests 1200/1200, 940-941 Mbit/s after each of 5 link cycles, ping and
+  checksum counting clean, no error counter, no dmesg line;
+- IR with the kernel's own rc-core and decoders: the air-conditioner frame
+  received bit-exact (its checksum holds), no interrupt while idle.
+
+Userland, not the kernel: with eth1 present at boot, the PiKVM image's
+networkd configures it by DHCP too, giving a second default route of the
+same metric. An OS on this kernel decides what eth1 is for.
