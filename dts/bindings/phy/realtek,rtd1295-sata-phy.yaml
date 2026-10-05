@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/phy/realtek,rtd1295-sata-phy.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Realtek RTD1295/RTD1296 SATA PHY
+
+maintainers:
+  - Jalen Lin <jalen.lin@gmail.com>
+
+description: |
+  The two SATA PHYs of the RTD1295/RTD1296 AHCI controller, one per port.
+  They are programmed through an MDIO controller in the AHCI block's
+  wrapper registers (the last 256 bytes of its 4 KiB window), and enabled
+  through bits in the SB2 system controller. The PHY specifier is the
+  port number. A PHY whose "phyN" reset is not given is not provided.
+
+properties:
+  compatible:
+    const: realtek,rtd1295-sata-phy
+
+  reg:
+    description: The AHCI block's wrapper registers.
+    maxItems: 1
+
+  clocks:
+    minItems: 1
+    items:
+      - description: SATA_ALIVE_0, for PHY 0
+      - description: SATA_ALIVE_1, for PHY 1
+
+  clock-names:
+    minItems: 1
+    items:
+      - const: alive0
+      - const: alive1
+
+  resets:
+    minItems: 2
+    items:
+      - description: PHY 0
+      - description: PHY 0 power
+      - description: PHY 1
+      - description: PHY 1 power
+
+  reset-names:
+    minItems: 2
+    items:
+      - const: phy0
+      - const: pow0
+      - const: phy1
+      - const: pow1
+
+  realtek,sb2:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The SB2 system controller, which holds the PHYs' bandgap, bias and
+      termination enables, PHY 0's SATA/SGMII select and the chip revision
+      (the RX settings depend on it).
+
+  '#phy-cells':
+    const: 1
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+  - resets
+  - reset-names
+  - realtek,sb2
+  - '#phy-cells'
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/reset/realtek,rtd1295.h>
+
+    phy@9803ff00 {
+        compatible = "realtek,rtd1295-sata-phy";
+        reg = <0x9803ff00 0x100>;
+        clocks = <&crt_clk 7>, <&crt_clk 58>;
+        clock-names = "alive0", "alive1";
+        resets = <&reset1 RTD1295_RSTN_SATA_PHY_0>,
+                 <&reset1 RTD1295_RSTN_SATA_PHY_POW_0>,
+                 <&reset4 RTD1295_RSTN_SATA_PHY_1>,
+                 <&reset4 RTD1295_RSTN_SATA_PHY_POW_1>;
+        reset-names = "phy0", "pow0", "phy1", "pow1";
+        realtek,sb2 = <&sb2>;
+        #phy-cells = <1>;
+    };
+...
