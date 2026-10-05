@@ -1,8 +1,1 @@
 obj-m += phy-rtd1295-sata.o
-
-# Development only: the nodes as a runtime overlay (scripts/build-overlay.sh
-# sata writes sata-overlay.dtso from sata-overlay.dtso.in first).
-ifneq ($(wildcard $(src)/sata-overlay.dtso),)
-obj-m += sata-overlay-mod.o
-sata-overlay-mod-y := sata-overlay.o sata-overlay.dtbo.o
-endif

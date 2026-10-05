@@ -8,7 +8,7 @@ There are three stages, each with its own files:
 
 | Stage | What | Files | Touches the board's boot partition? |
 |---|---|---|---|
-| 1. Develop | the node as a runtime overlay, loaded and removed with a module | `drivers/<name>/<name>-overlay.dtso.in`, `scripts/build-<name>-overlay.sh`, `drivers/<name>/*-overlay.c` | no |
+| 1. Develop | the node as a runtime overlay, loaded and removed with a module | `overlays/<name>/<x>-overlay.dtso.in`, `scripts/build-<name>-overlay.sh`, `drivers/<name>/*-overlay.c` | no |
 | 2. Permanent | the node in a board DTS | `dts/<name>.dtsi` | yes: a new DTB has to be installed (ask first) |
 | 3. Upstream | binding + SoC node + board node | `dts/bindings/...yaml`, a split of `dts/<name>.dtsi` | -- |
 
@@ -91,10 +91,10 @@ The board's DTB has no `__symbols__`, so an overlay cannot refer to
 `&crt_clk` and friends by label. It carries the running board's phandle
 numbers instead:
 
-1. `drivers/nat-eth/nat-overlay.dtso.in` is the node with placeholders
+1. `overlays/nat-eth/nat-overlay.dtso.in` is the node with placeholders
    (`@GIC@`, `@CRT_CLK@`, `@RESET1@`, `@SB2@`, `@PHY_MODE@`), under
    `target-path = "/soc@0/bus@98000000"`.
-2. `scripts/build-nat-overlay.sh [phy-mode]` reads each phandle from the
+2. `scripts/build-overlay.sh nat-eth` (debug tools; `PHY_MODE=`) reads each phandle from the
    board (`/proc/device-tree/<path>/phandle`) and writes
    `nat-overlay.dtso` (generated, gitignored).
 3. kbuild compiles the `.dtso` to a `.dtbo` and wraps it in an object
@@ -103,7 +103,7 @@ numbers instead:
    removes it on rmmod. dtc warns that the numeric cells are not phandle
    references; expected.
 4. Load the overlay module, then the driver; the platform bus creates
-   `98060000.ethernet` and binds it. `scripts/board/nat-up.sh` does both.
+   `98060000.ethernet` and binds it. `board/nat-up.sh` does both.
 
 Phandles of the live tree (2026-10-05): GIC 1, `crt_clk` 13, `reset1` 15,
 `sb2` 17. They only change with a new board DTB: re-run step 2 then.

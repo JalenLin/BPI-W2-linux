@@ -12,8 +12,6 @@ Module.symvers
 *.dtbo
 *.dtbo.S
 .*.tmp
-# generated from nat-overlay.dtso.in with the board's phandles
-/drivers/nat-eth/nat-overlay.dtso
 /build/
 
 # Never commit credentials or vendor material that is not ours to share
@@ -23,8 +21,5 @@ id_ecdsa*
 id_ed25519*
 authorized_keys
 *.pdf
-/drivers/sata/sata-overlay.dtso
-/drivers/ir/ir-overlay.dtso
-/drivers/ir/rc-dev/
 __pycache__/
 /vendor/

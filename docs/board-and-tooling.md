@@ -87,18 +87,20 @@ three.
 
 ## Building a driver here
 
-External modules, built against the PiKVM kernel tree, in its container:
+External modules, built against this repository's kernel tree
+(docs/kernel-build.md), in its container:
 
 ```sh
-(cd ../bpiw2_pikvm && make builder-mainline sources-mainline kernel-mainline)   # once
-scripts/build-module.sh <name>        # drivers/<name>/ -> drivers/<name>/*.ko
-scripts/push-module.sh <name>         # to the board, insmod, dmesg
+make builder kernel-sources kernel     # once
+scripts/build-module.sh <name>         # drivers/<name>/ -> drivers/<name>/*.ko
 ```
 
+Copying a module to the board and loading it is the debug tools' job
+(`scripts/push-module.sh <x.ko>` in `../bpiw2_debug`).
+
 `drivers/<name>/Kbuild` holds `obj-m += ...`. The module's vermagic must
-match the running kernel (`6.18.55-bpiw2` at the time of writing). After a
-kernel upgrade in the PiKVM repository, push that kernel first, then
-rebuild here.
+match the running kernel (`6.18.55-bpiw2` at the time of writing; the
+board runs the PiKVM build, whose `.config` is identical).
 
 ### Device tree
 
@@ -125,9 +127,10 @@ branch, with the user's agreement.
 
 ### Testing on the board
 
-docs/testing.md: the setup (tools under `/root` via
-`scripts/board-tools.sh`, the far ends, the LAN), the tests with their
-scripts and pass criteria, the traps met, the safety rules.
+In the debug tools (`../bpiw2_debug`, local): docs/testing.md has the
+setup (tools under `/root` via `scripts/board-tools.sh`, the far ends, the
+LAN), the tests with their scripts and pass criteria, the traps met, the
+safety rules.
 
 ## Where the reference material is
 

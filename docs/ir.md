@@ -83,15 +83,15 @@ no LIRC. Decoders cannot simply be added: their state is in rc-core's
 `CONFIG_IR_*_DECODER` (and `struct rc_dev` changes with `CONFIG_LIRC`). So
 `scripts/build-rc-dev.sh` copies rc-core (with `lirc_dev.c`) and the NEC,
 RC-5, RC-6 and Sony decoders from the kernel tree into
-`drivers/ir/rc-dev/` (gitignored), and `drivers/ir/Kbuild` then builds
+`rc-dev/` of the debug tools, whose Kbuild builds
 them and the driver with one set of options. They load from `/root` with
 `insmod` instead of the board's `rc-core.ko` (not loaded by anything on
 the PiKVM image). A driver built that way only works with that rc-core:
-rebuild without `rc-dev/` for a kernel that has its own decoders.
+for a kernel with its own decoders, use `scripts/build-module.sh ir` here.
 
 ```sh
-scripts/build-rc-dev.sh; scripts/build-overlay.sh ir; scripts/build-module.sh ir
-# copy drivers/ir/*.ko and drivers/ir/rc-dev/*.ko to /root, then on the board:
+scripts/build-rc-dev.sh; scripts/build-overlay.sh ir     # debug tools
+# (debug tools) copy rc-dev/*.ko to /root, then on the board:
 sh /root/ir-up.sh          # rc-core, decoders, overlay, driver; all protocols on
 python3 /root/ir-watch.py 30   # raw pulses from /dev/lirc0, scancodes, keys
 sh /root/ir-up.sh down
@@ -107,7 +107,7 @@ FIFO interrupts of a long frame), one step of temperature changes only a
 byte or two, and mark/space widths sit at the protocol's values within a
 sample (40 us). A TV remote would add an end-to-end scancode test.
 
-Development overlay: `drivers/ir/ir-overlay.dtso.in` (the pin group under
+Development overlay: `overlays/ir/ir-overlay.dtso.in` (the pin group under
 `iso_pinmux`, the node under `iso`), phandles filled by
 `scripts/build-overlay.sh ir` (ISO clock 9, reset 8, IRQ mux 7, osc 6 on
 2026-10-05).

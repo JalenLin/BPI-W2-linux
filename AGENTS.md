@@ -88,13 +88,21 @@ board.
 
 ## Layout
 
+**Test and debug tooling is not in this repository.** The board tests
+(`board/...`), the development overlays (`overlays/<name>/`), the rc-dev
+build (`rc-dev/`), the host scripts for them (`scripts/board-tools.sh`,
+`push-module.sh`, `build-overlay.sh`, `build-rc-dev.sh`, `install-dtb.sh`)
+and the test notes (`docs/testing.md`) live in a separate local repository,
+`../bpiw2_debug`, which is not published. The notes here name them by
+those paths.
+
+
 | Path | What |
 |---|---|
 | `docker/`, `kernel/`, `vendor/linux` | The kernel build: container, patches, new files, config fragment; the fetched tree (gitignored) |
 | `drivers/<feature>/` | One directory per driver, built as an external module against `vendor/linux` |
 | `dts/` | Device-tree fragments for the board; `dts/board/` the board DTS; `dts/bindings/` the DT bindings (docs/device-tree.md) |
-| `scripts/` | Build and deploy helpers |
-| `scripts/board/` | Tests and tools that run on the board; `scripts/board-tools.sh` puts them there (docs/testing.md) |
+| `scripts/` | Kernel and module build: `fetch-kernel.sh`, `build-kernel.sh`, `in-docker.sh`, `build-module.sh` |
 | `docs/` | Per-feature notes: what the hardware is, where the BSP code is, what is known, what has been tried |
 
 ## How to work on a feature
@@ -105,12 +113,11 @@ board.
 3. Write the driver in `drivers/<feature>/` (mainline APIs: `devm_*`,
    regmap or plain MMIO, `reset_control`, `clk`, existing subsystems such
    as libahci_platform, rc-core, the PCI host bridge helpers or phylink).
-4. Add its DT node to `dts/`. Test it as a runtime overlay (as
-   `drivers/nat-eth/` does; docs/board-and-tooling.md), or in the board
-   DTS in `../bpiw2_pikvm` on a local, uncommitted change (or a work
-   branch) -- installing a new DTB means asking first.
-5. Build, push and test on the board (docs/board-and-tooling.md,
-   docs/testing.md).
+4. Add its DT node to `dts/` and to the board DTS (`dts/board/`). Test it
+   first as a runtime overlay (the debug tools' `overlays/`), then from a
+   board DTB -- installing a new DTB means asking first.
+5. Build, push and test on the board (docs/board-and-tooling.md, and the
+   debug tools' docs/testing.md).
 6. Each feature needs real hardware to test: a SATA disk, a PCIe card, an
    IR remote, a cable in the second RJ45. As of 2026-10-05 only the
    second RJ45 has its cable (to the same LAN as eth0); ask before

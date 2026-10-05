@@ -97,7 +97,7 @@ DTB; `dt-validate` with the PHY binding is clean. Binding: yamllint,
 dt-doc-validate and its example clean; a bogus property and a missing
 `realtek,sb2` are both reported.
 
-Development overlay (`drivers/sata/sata-overlay.dtso.in`,
+Development overlay (`overlays/sata/sata-overlay.dtso.in`,
 `scripts/build-overlay.sh sata`): the same nodes, except drive power. The
 board DTB gives the MISC GPIO controller no phandle (nothing refers to
 it), so the overlay cannot point a regulator at it; it adds a `gpio-hog`
@@ -173,7 +173,7 @@ exists).
   and on the host once, after a long powered idle). A drive fault,
   unrelated to the driver -- every test it passed while up stands, but
   it is not a disk to soak with. A clean shutdown before cutting power
-  remains the rule (docs/testing.md).
+  remains the rule (`docs/testing.md` of the debug tools).
 
 - **From the board DTB** (`dts/sata.dtsi` plus `dts/ir.dtsi` appended to
   the PiKVM board DTS, uncommitted there; installed with

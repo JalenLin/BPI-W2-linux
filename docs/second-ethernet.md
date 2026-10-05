@@ -4,7 +4,7 @@ Status (2026-10-05): **complete**, as a loadable module,
 `drivers/nat-eth/rtd1295-hwnat.c` (checkpatch --strict clean), with the
 node in the board DTB since 2026-10-05 (installed on the board; the
 change to the PiKVM board DTS is local and uncommitted) -- the driver
-probes from it without the overlay. Four-hour soak passed (docs/testing.md).
+probes from it without the overlay. Four-hour soak passed (`docs/testing.md` of the debug tools).
 10/100/1000 Mbps, TCP at line rate both ways with CPU load like eth0's,
 802.1Q VLANs, pause, promiscuous mode, RX checksum, interrupt mitigation,
 ethtool (link, pause, coalescing, MIB statistics), recovery from a TX
@@ -292,7 +292,7 @@ The base DTB has no `__symbols__`, so the node goes in as a runtime
 overlay with the running board's phandles:
 
 ```sh
-scripts/build-nat-overlay.sh          # writes drivers/nat-eth/nat-overlay.dtso
+scripts/build-overlay.sh nat-eth      # (debug tools) fills and builds the overlay
 scripts/build-module.sh nat-eth       # rtd1295-hwnat.ko and nat-overlay-mod.ko
 # on the board: insmod nat-overlay-mod.ko (adds the node), insmod rtd1295-hwnat.ko
 ```
@@ -302,7 +302,7 @@ disk changes. Re-run the script after a new board DTB.
 
 The image's networkd brings eth1 up with DHCP as soon as it appears (it
 matches `eth*`). Both NICs then sit on the same subnet, so to test the
-wire move eth1 into a network namespace (`scripts/board/README.md`).
+wire move eth1 into a network namespace (`board/README.md`).
 
 ## Verified (2026-10-05, cable to the same LAN switch as eth0)
 
@@ -335,7 +335,7 @@ Later the same day, after the fixes in "Findings":
 - TX stall induced on purpose (`CPUICR.TXCMD` cleared through /dev/mem,
   ring then filled): watchdog after 5.3 s, rings rebuilt, ping and TCP
   (936 Mbit/s) back without intervention.
-- Regression run (`scripts/board/regress.sh`):
+- Regression run (`board/regress.sh`):
   insmod/rmmod x3; loop test 1200/1200 each way under eMMC DMA; link
   down/up x5 each followed by TCP at 936-940 Mbit/s; iperf3 to the host
   904/914 Mbit/s; ping 100/100 at 0.31 ms; bad checksums counted by the
@@ -343,9 +343,9 @@ Later the same day, after the fixes in "Findings":
 
 Storage DMA alongside (2026-10-05, SD card in): SD reads alone, with
 eMMC reads, with TCP both ways, and with both, no SD error
-(`scripts/board/sd-isolate.sh`); then TCP both ways plus eMMC and SD
+(`board/sd-isolate.sh`); then TCP both ways plus eMMC and SD
 reads, and the byte-exact loop test during the reads: 1200/1200 each
-way, no error counter moved (`scripts/board/dma-stress.sh`). The first
+way, no error counter moved (`board/dma-stress.sh`). The first
 attempt had failed with SD CRC errors (-84) that also kept the reinserted
 card from initialising; after the card was reseated it never recurred,
 so most likely a badly seated card. (Recovering from it by rebinding the
@@ -361,7 +361,7 @@ untagged) and dropped every other VID; the user then set it to trunk VIDs
 2700-2710. Before any VLAN code, tagged frames from eth1 left with their
 tag intact, and tagged frames for eth1 were discarded at port 5's ingress
 (`rx_port_discards`). With VLAN filtering in the driver
-(`scripts/board/vlantest.sh`, eth0 VLAN devices as the far end):
+(`board/vlantest.sh`, eth0 VLAN devices as the far end):
 
 - no eth1 VLAN device: VID 2700 filtered; eth1.2700 and .2705 created:
   those pass, 2710 does not; eth1.2705 deleted: closed again;
@@ -378,7 +378,7 @@ tag intact, and tagged frames for eth1 were discarded at port 5's ingress
 
 iperf3 between the board and the development host (one end off the board,
 through the LAN's router, which caps the path at ~820-920 Mbit/s), CPU
-from `/proc/stat` with `scripts/board/cpustat.py`. "busy" is of all four
+from `/proc/stat` with `board/cpustat.py`. "busy" is of all four
 A53 cores together (100 % = four cores); ~3 % is the idle baseline. eth0
 (r8169soc, SG/checksum/TSO offload on) is the reference.
 
@@ -492,7 +492,7 @@ either way), so 256 stays.
     wired), so a link drop is noticed up to 1 s late; frames sent
     meanwhile are lost. Normal for a polled PHY.
   - After the link really comes up, nothing passes for 0-0.32 s on eth1,
-    both directions at once, outside the MAC (`scripts/board/linkup-trace.py`).
+    both directions at once, outside the MAC (`board/linkup-trace.py`).
     eth0 (r8169soc, `ip link down/up`) shows 0.58-0.78 s. Link settling,
     not a driver fault.
   - Without any link event, 3-s TCP tests still varied: an occasional
@@ -513,7 +513,7 @@ either way), so 256 stays.
     clear difference. **Resolved: the cable or switch port.** With another
     cable and port: 0 FCS errors in 4 x 30 s at 900 Mbit/s (9.6 M frames).
   - On the new cable, six 30-s runs of 900 Mbit/s UDP towards eth1 with
-    every layer counted (`scripts/board/udp-account.sh`): port 5 received
+    every layer counted (`board/udp-account.sh`): port 5 received
     exactly what the driver delivered, every run; no switch discards; the
     only losses were eth0's qdisc and the receiving socket's buffer (one
     run: 649 + 3259 = 3908, the loss iperf3 reported).
@@ -524,7 +524,7 @@ either way), so 256 stays.
   concurrent test (before mitigation), presumably while RX ring 0 was
   full. None in the TCP runs after mitigation.
 - **RX checksum flags** (checked with frames broken on purpose,
-  `scripts/board/badcsum.py`): `opts3[31:29]` is the type (5 TCP, 6 UDP,
+  `board/badcsum.py`): `opts3[31:29]` is the type (5 TCP, 6 UDP,
   3 ICMP and ICMPv6, 0 other, e.g. ARP), `opts4` bit 8/9 IPv4/IPv6, bit 11
   fragment. The core checks the IPv4 header and TCP/UDP checksums over
   IPv4 and IPv6 and clears `opts5` bit 31 (L3) or 30 (L4) when one is

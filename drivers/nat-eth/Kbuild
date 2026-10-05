@@ -1,8 +1,1 @@
 obj-m += rtd1295-hwnat.o
-
-# Development only: the node as a runtime overlay (scripts/build-nat-overlay.sh
-# writes nat-overlay.dtso from nat-overlay.dtso.in first).
-ifneq ($(wildcard $(src)/nat-overlay.dtso),)
-obj-m += nat-overlay-mod.o
-nat-overlay-mod-y := nat-overlay.o nat-overlay.dtbo.o
-endif
