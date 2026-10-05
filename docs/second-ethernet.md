@@ -244,8 +244,10 @@ RX 32 frames / 200 us, TX 32 / 400 us), `-k/-K rx` (RX checksum),
 counters and the CPU port's discards), link settings and `-r` through
 phylib. Changing the MAC address works live (`ndo_set_mac_address`).
 
-A debugfs file, `/sys/kernel/debug/rtd1295-hwnat`, dumps the main
-registers and the first descriptors of both rings.
+The MIB counter registers are 22 bits wide (frame counters wrap after
+4,194,304 frames, under 3 s at line rate with small frames); a delayed
+work item reads them every second and keeps 64-bit totals for
+`ethtool -S`. The bring-up debugfs file and register dumps are gone.
 
 ### Register map (offsets from 0x98060000)
 
@@ -450,10 +452,34 @@ either way), so 256 stays.
   on the VLAN were discarded, and there are only eight entries. By port
   (`SWTCR0` = port based, `PLITIMR` port 5 -> netif 0), one entry covers
   every VID on the port.
-- **After any link renegotiation** (ip link down/up, `ethtool -r`) a TCP
-  test started a few seconds later sometimes ran slow or failed, about 1
-  in 8. eth0 does the same after its own renegotiation (1 failure and 1
-  slow run in 8), so it is this LAN, not the driver.
+- **"TCP runs slower after a link change" -- what it really was**
+  (2026-10-05, corrects an earlier note that blamed this LAN; the eth0
+  comparison behind it never renegotiated eth0: r8169soc does not support
+  `ethtool -r`):
+  - phylib polls the PHY once a second (the RTL8211F's INTB pin is not
+    wired), so a link drop is noticed up to 1 s late; frames sent
+    meanwhile are lost. Normal for a polled PHY.
+  - After the link really comes up, nothing passes for 0-0.32 s on eth1,
+    both directions at once, outside the MAC (`scripts/board/linkup-trace.py`).
+    eth0 (r8169soc, `ip link down/up`) shows 0.58-0.78 s. Link settling,
+    not a driver fault.
+  - Without any link event, 3-s TCP tests still varied: an occasional
+    single retransmission costs hundreds of ms of a 3-s run. Some were
+    tail-loss probes the receiver answered with D-SACKs (nothing lost: an
+    ACK came late), some real single-segment losses. Both NICs share CPU0
+    for their interrupts in these board-to-board tests.
+  - UDP "loss" at 900 Mbit/s was never the network: with frame accounting
+    at every layer, the receiver's socket buffer (`UdpRcvbufErrors`) or the
+    sender's qdisc (eth0 or eth1, iperf3 bursting) accounts for it; what
+    the sending driver hands over equals what port 5 sends, and what eth0
+    sends equals what port 5 receives.
+  - What is left on the wire: **port 5 receives a few frames with bad FCS**,
+    0 to 14 per 800k at 900 Mbit/s (10^-6 to 10^-5), with no symbol
+    errors and the PHY's idle-error counter at 0. RGMII RX timing sweep
+    (PHY RX delay on/off x MAC RCOMP 0/1.5/2/2.5 ns): the current setting
+    (PHY on, MAC 0) is the best; Schmitt triggers on the RX pads made no
+    clear difference. Not resolved: could be this cable or switch port
+    (swapping them is the next test).
 - **The CPU port's MIB counts every frame from the DMA as an FCS error**
   (its "in" side, `fcs_err` = `rxdv`), apparently because the FCS is
   appended later. Not a fault.

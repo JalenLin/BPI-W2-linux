@@ -16,7 +16,6 @@
 
 #include <linux/bitfield.h>
 #include <linux/clk.h>
-#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/etherdevice.h>
@@ -256,6 +255,7 @@ struct nat_desc {
 #define NAT_SPARE_DESCS		2	/* rings the hardware has but we do not use */
 #define NAT_RX_BUF		1540	/* frame + 2 VLAN tags + FCS */
 #define NAT_NAPI_WEIGHT		64
+#define NAT_N_MIBS		38	/* entries in nat_mibs[] */
 /*
  * Default interrupt mitigation (ethtool -C). Measured at ~900 Mbit/s TCP
  * RX: 34k -> 14k interrupts/s, CPU0 91 % -> 71 %; ping unchanged (the
@@ -300,6 +300,12 @@ struct nat_priv {
 	u32 rx_usecs, rx_frames, tx_usecs, tx_frames;
 	bool pause_autoneg, pause_rx, pause_tx;
 
+	/* MIB counters widened to 64 bits; see nat_mib_update() */
+	struct mutex mib_lock;
+	struct delayed_work mib_work;
+	u64 mib[NAT_N_MIBS];
+	u64 mib_raw[NAT_N_MIBS];
+
 	/* VIDs the stack asked for, and whether all of them are open */
 	DECLARE_BITMAP(vids, VLAN_N_VID);
 	bool all_vids;
@@ -310,8 +316,6 @@ struct nat_priv {
 	spinlock_t tx_lock;	/* TX ring head and tail, xmit vs reclaim */
 	struct nat_ring rx[NAT_RX_RINGS];
 	struct nat_ring tx[NAT_TX_RINGS];
-
-	struct dentry *dbg;
 };
 
 static u32 nat_r(struct nat_priv *p, u32 reg)
@@ -510,21 +514,9 @@ static void nat_power_off(struct nat_priv *p)
 	clk_disable_unprepare(p->clk);
 }
 
-static void nat_dump(struct nat_priv *p, const char *when)
-{
-	dev_dbg(p->dev,
-		"%s: CPUICR %08x CPUICR1 %08x MSCR %08x SWTCR0 %08x PITCR %08x PCRP5 %08x PSRP5 %08x P5GMIICR %08x CPUIMCR %08x QNUMCR %08x\n",
-		when, nat_r(p, CPUICR), nat_r(p, CPUICR1), nat_r(p, MSCR),
-		nat_r(p, SWTCR0), nat_r(p, PITCR), nat_r(p, PCRP(NAT_PORT)),
-		nat_r(p, PSRP(NAT_PORT)), nat_r(p, P5GMIICR),
-		nat_r(p, CPUIMCR), nat_r(p, QNUMCR));
-}
-
 static int nat_switch_init(struct nat_priv *p, const u8 *mac)
 {
 	int ret;
-
-	nat_dump(p, "after reset");
 
 	/* EEE off */
 	nat_w(p, EEECR, 0);
@@ -609,7 +601,6 @@ static int nat_switch_init(struct nat_priv *p, const u8 *mac)
 		CPUICR1_TXRX_DIV_LX | CPUICR1_TSO_ID_SEL);
 	nat_rmw(p, MACCTRL1, 0, MACCTRL1_CMAC_CLK_SEL);
 
-	nat_dump(p, "configured");
 	return 0;
 }
 
@@ -1059,9 +1050,11 @@ static int nat_set_coalesce(struct net_device *ndev,
 
 /*
  * The switch's MIB counters. In at 0x161100 + port * 0x80, out at
- * 0x161800 + port * 0x80 (offsets below from 0x161100). The octet
- * counters are two words, the low one 22 bits wide (Realtek reads them as
- * low + (high << 22)).
+ * 0x161800 + port * 0x80 (offsets below from 0x161100). Every counter
+ * register is 22 bits wide; the octet counters are two of them (Realtek
+ * reads them as low + (high << 22)). A frame counter wraps after 2^22
+ * frames, under 3 s at line rate with small frames, so the driver reads
+ * them every second and keeps 64-bit totals.
  */
 struct nat_mib {
 	char name[ETH_GSTRING_LEN];
@@ -1117,6 +1110,10 @@ static const struct nat_mib nat_mibs[] = {
 	CPU_MIB("cpu_out_delay_discards", 0x730),
 };
 
+static_assert(ARRAY_SIZE(nat_mibs) == NAT_N_MIBS);
+
+#define MIB_BITS		22
+
 static u64 nat_mib_read(struct nat_priv *p, const struct nat_mib *m)
 {
 	u32 reg = MIB_IN_BASE + m->port * 0x80 + m->off;
@@ -1128,7 +1125,32 @@ static u64 nat_mib_read(struct nat_priv *p, const struct nat_mib *m)
 		hi = nat_r(p, reg + 4);
 		lo = nat_r(p, reg);
 	} while (hi != nat_r(p, reg + 4));
-	return lo + ((u64)hi << 22);
+	return lo + ((u64)hi << MIB_BITS);
+}
+
+/* add what each counter moved since the last read, modulo its width */
+static void nat_mib_update(struct nat_priv *p)
+{
+	unsigned int i;
+
+	mutex_lock(&p->mib_lock);
+	for (i = 0; i < NAT_N_MIBS; i++) {
+		const struct nat_mib *m = &nat_mibs[i];
+		u64 mask = GENMASK_ULL((m->wide ? 2 : 1) * MIB_BITS - 1, 0);
+		u64 raw = nat_mib_read(p, m);
+
+		p->mib[i] += (raw - p->mib_raw[i]) & mask;
+		p->mib_raw[i] = raw;
+	}
+	mutex_unlock(&p->mib_lock);
+}
+
+static void nat_mib_work(struct work_struct *work)
+{
+	struct nat_priv *p = container_of(work, struct nat_priv, mib_work.work);
+
+	nat_mib_update(p);
+	schedule_delayed_work(&p->mib_work, HZ);
 }
 
 static int nat_get_sset_count(struct net_device *ndev, int sset)
@@ -1150,10 +1172,11 @@ static void nat_get_ethtool_stats(struct net_device *ndev,
 				  struct ethtool_stats *stats, u64 *data)
 {
 	struct nat_priv *p = netdev_priv(ndev);
-	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(nat_mibs); i++)
-		data[i] = nat_mib_read(p, &nat_mibs[i]);
+	nat_mib_update(p);
+	mutex_lock(&p->mib_lock);
+	memcpy(data, p->mib, sizeof(p->mib));
+	mutex_unlock(&p->mib_lock);
 }
 
 static void nat_get_pauseparam(struct net_device *ndev,
@@ -1300,7 +1323,6 @@ static int nat_open(struct net_device *ndev)
 
 	phy_start(phy);
 	netif_start_queue(ndev);
-	nat_dump(p, "open");
 	return 0;
 
 err_phy:
@@ -1472,55 +1494,6 @@ static const struct net_device_ops nat_netdev_ops = {
 	.ndo_eth_ioctl		= phy_do_ioctl_running,
 };
 
-/* ---- debugfs: registers and rings, for bring-up ---- */
-
-static void nat_dbg_ring(struct seq_file *m, struct nat_priv *p,
-			 const char *name, struct nat_ring *r, u32 cdp_reg,
-			 unsigned int max)
-{
-	unsigned int i;
-
-	if (!r->desc) {
-		seq_printf(m, "%s: not allocated\n", name);
-		return;
-	}
-	seq_printf(m, "%s: dma %08x count %u head %u tail %u cdp %08x\n", name,
-		   (u32)r->dma, r->count, r->head, r->tail, nat_r(p, cdp_reg));
-	for (i = 0; i < r->count && i < max; i++) {
-		struct nat_desc *d = &r->desc[i];
-
-		seq_printf(m, "  [%3u] %08x %08x %08x %08x %08x %08x\n", i,
-			   le32_to_cpu(d->opts1), le32_to_cpu(d->addr),
-			   le32_to_cpu(d->opts2), le32_to_cpu(d->opts3),
-			   le32_to_cpu(d->opts4), le32_to_cpu(d->opts5));
-	}
-}
-
-static int nat_dbg_show(struct seq_file *m, void *v)
-{
-	static const struct { const char *name; u32 reg; } regs[] = {
-		{ "CPUICR", CPUICR }, { "CPUICR1", CPUICR1 },
-		{ "CPUIIMR", CPUIIMR }, { "CPUIISR", CPUIISR },
-		{ "DMA_CR0", DMA_CR0 }, { "DMA_CR1", DMA_CR1 },
-		{ "DMA_CR4", DMA_CR4 }, { "MSCR", MSCR }, { "SWTCR0", SWTCR0 },
-		{ "FFCR", FFCR }, { "PCRP5", PCRP(NAT_PORT) },
-		{ "PSRP5", PSRP(NAT_PORT) }, { "P5GMIICR", P5GMIICR },
-		{ "SSIR", SSIR }, { "PVCR2", PVCR(NAT_PORT) },
-		{ "CPUIMCR", CPUIMCR }, { "CPUIMTTR0", CPUIMTTR(0) },
-		{ "CPUIMPNTR0", CPUIMPNTR0 }, { "CPUIMPNTR1", CPUIMPNTR1 },
-		{ "CPUIMTTR2", CPUIMTTR(6) }, { "CPUIMPNTR2", CPUIMPNTR2 },
-	};
-	struct nat_priv *p = m->private;
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(regs); i++)
-		seq_printf(m, "%-9s %08x\n", regs[i].name, nat_r(p, regs[i].reg));
-	nat_dbg_ring(m, p, "rx0", &p->rx[0], CPURPDCR(0), 8);
-	nat_dbg_ring(m, p, "tx0", &p->tx[0], CPUTPDCR0, 8);
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(nat_dbg);
-
 /* ---- probe ---- */
 
 static int nat_probe(struct platform_device *pdev)
@@ -1546,6 +1519,8 @@ static int nat_probe(struct platform_device *pdev)
 	spin_lock_init(&p->tx_lock);
 	INIT_WORK(&p->reset_work, nat_reset_work);
 	INIT_WORK(&p->vlan_work, nat_vlan_work);
+	mutex_init(&p->mib_lock);
+	INIT_DELAYED_WORK(&p->mib_work, nat_mib_work);
 	platform_set_drvdata(pdev, p);
 
 	p->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
@@ -1613,17 +1588,18 @@ static int nat_probe(struct platform_device *pdev)
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = ETH_DATA_LEN;
 	netif_napi_add_weight(ndev, &p->napi, nat_poll, NAT_NAPI_WEIGHT);
+	schedule_delayed_work(&p->mib_work, HZ);
 
 	ret = register_netdev(ndev);
 	if (ret)
 		goto err_napi;
 
-	p->dbg = debugfs_create_file(DRV_NAME, 0400, NULL, p, &nat_dbg_fops);
 	netdev_info(ndev, "port %d, %pM, irq %d\n", NAT_PORT, ndev->dev_addr,
 		    p->irq);
 	return 0;
 
 err_napi:
+	cancel_delayed_work_sync(&p->mib_work);
 	netif_napi_del(&p->napi);
 err_power:
 	nat_power_off(p);
@@ -1636,13 +1612,13 @@ static void nat_remove(struct platform_device *pdev)
 {
 	struct nat_priv *p = platform_get_drvdata(pdev);
 
-	debugfs_remove(p->dbg);
 	cancel_work_sync(&p->reset_work);
 	cancel_work_sync(&p->vlan_work);
 	unregister_netdev(p->ndev);
 	/* closing on the way out may have queued them again */
 	cancel_work_sync(&p->reset_work);
 	cancel_work_sync(&p->vlan_work);
+	cancel_delayed_work_sync(&p->mib_work);
 	netif_napi_del(&p->napi);
 	nat_power_off(p);
 	of_node_put(p->phy_np);
