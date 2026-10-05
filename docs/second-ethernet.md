@@ -331,8 +331,17 @@ Later the same day, after the fixes in "Findings":
   904/914 Mbit/s; ping 100/100 at 0.31 ms; bad checksums counted by the
   stack; no MIB errors, no driver errors, nothing in dmesg.
 
-Not verified: an SD card under concurrent load (none was in); 802.1Q
-VLANs (below); long runs (hours); the gateway answering ping (it ignores
+Storage DMA alongside (2026-10-05, SD card in): SD reads alone, with
+eMMC reads, with TCP both ways, and with both, no SD error
+(`scripts/board/sd-isolate.sh`); then TCP both ways plus eMMC and SD
+reads, and the byte-exact loop test during the reads: 1200/1200 each
+way, no error counter moved (`scripts/board/dma-stress.sh`). The first
+attempt had failed with SD CRC errors (-84) that also kept the reinserted
+card from initialising; after the card was reseated it never recurred,
+so most likely a badly seated card. (Recovering from it by rebinding the
+SD driver took the eMMC down: docs/board-and-tooling.md.)
+
+Not verified: long runs (hours); the gateway answering ping (it ignores
 ICMP from eth0 too).
 
 ### 802.1Q VLANs
@@ -478,8 +487,13 @@ either way), so 256 stays.
     errors and the PHY's idle-error counter at 0. RGMII RX timing sweep
     (PHY RX delay on/off x MAC RCOMP 0/1.5/2/2.5 ns): the current setting
     (PHY on, MAC 0) is the best; Schmitt triggers on the RX pads made no
-    clear difference. Not resolved: could be this cable or switch port
-    (swapping them is the next test).
+    clear difference. **Resolved: the cable or switch port.** With another
+    cable and port: 0 FCS errors in 4 x 30 s at 900 Mbit/s (9.6 M frames).
+  - On the new cable, six 30-s runs of 900 Mbit/s UDP towards eth1 with
+    every layer counted (`scripts/board/udp-account.sh`): port 5 received
+    exactly what the driver delivered, every run; no switch discards; the
+    only losses were eth0's qdisc and the receiving socket's buffer (one
+    run: 649 + 3259 = 3908, the loss iperf3 reported).
 - **The CPU port's MIB counts every frame from the DMA as an FCS error**
   (its "in" side, `fcs_err` = `rxdv`), apparently because the FCS is
   appended later. Not a fault.
