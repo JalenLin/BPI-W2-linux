@@ -85,6 +85,16 @@ python3 /root/ir-watch.py 30   # raw pulses from /dev/lirc0, scancodes, keys
 sh /root/ir-up.sh down
 ```
 
+With an air-conditioner remote (what the user has, 2026-10-05): its
+frames carry the whole state, often 100-200+ bits in a vendor protocol, so
+rc-core's decoders give no scancode. `ir-watch.py` decodes any
+pulse-distance frame (equal marks, short/long spaces: NEC and most
+air-conditioner remotes) into bytes, LSB first. Pass criteria: the same
+button twice gives the same bytes (nothing dropped or shifted across the
+FIFO interrupts of a long frame), one step of temperature changes only a
+byte or two, and mark/space widths sit at the protocol's values within a
+sample (40 us). A TV remote would add an end-to-end scancode test.
+
 Development overlay: `drivers/ir/ir-overlay.dtso.in` (the pin group under
 `iso_pinmux`, the node under `iso`), phandles filled by
 `scripts/build-overlay.sh ir` (ISO clock 9, reset 8, IRQ mux 7, osc 6 on
