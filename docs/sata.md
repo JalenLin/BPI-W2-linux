@@ -2,8 +2,8 @@
 
 Status (2026-10-05): **works on the board**: 6 Gbps link, reads at
 SATA III's limit, writes verified, ext4, all alongside the other DMA
-masters (see "Tried"). Tested with the development overlay; the
-regulator path of `dts/sata.dtsi` needs that DTB installed.
+masters (see "Tried"), on both ports, from the board DTB (`dts/sata.dtsi`,
+installed 2026-10-05) with the drive power regulator.
 Mainline's generic AHCI driver (`ahci_platform`, built in) does the
 controller; `drivers/sata/phy-rtd1295-sata.c` is the PHY. Builds clean
 (`W=1`, checkpatch --strict); its PHY register writes are, word for word,
@@ -165,6 +165,25 @@ exists).
   `sata-fs.sh` still there. (I had expected a loader-mode drive not to
   recover this way; it did.) Lesson in docs/testing.md.
 
-Not done yet: reads and writes on port 0 (needs a working drive), the
-regulator path of `dts/sata.dtsi` (needs that DTB), hot-plug, a long
-soak.
+- **From the board DTB** (`dts/sata.dtsi` plus `dts/ir.dtsi` appended to
+  the PiKVM board DTS, uncommitted there; installed with
+  `install-dtb.sh`, previous DTB kept as `.prev`), SSD on **port 0**:
+  - At boot: AHCI waits on the PHY (`deferred probe pending`) without
+    touching SATA; the `hdd-power` regulator owns GPIO 56 and drives it
+    low: the drive stays unpowered.
+  - `insmod phy-rtd1295-sata.ko`: AHCI probes, the regulator turns on
+    (2 users, both ports' `target-supply`), port 0 links at 6.0 Gbps and
+    the SX930 is ready in under a second.
+  - The ext4 written on port 1 before the bad power-off: `fsck -n` clean,
+    its 8 files still identical.
+  - `sata-write.sh`: 16 copies read back identical; 301-319 MB/s alone,
+    208-248 under load, 4 GiB sequential 310 MB/s; alongside it
+    `dma-stress.sh` (with the SD card): TCP 823 + 538 Mbit/s, loop tests
+    1200/1200, eMMC 105 MB/s, SD 18 MB/s, no eth1 error counter moved.
+    `sata-fs.sh`: 455 MB/s, files identical, fsck clean.
+  - A first attempt overlapped with a run an interrupted command had
+    already started on the board (two writers, a driver reload in the
+    middle): its port clash, missing eth1, one FCS error and 204 MB/s are
+    discarded; the board test scripts now take a lock.
+
+Not done yet: hot-plug, a long soak.

@@ -161,7 +161,17 @@ from the eMMC, `ethernet@60000` came from the DTB, and the driver probed
 without the overlay (link up at 1 Gbps, flow control rx/tx). Phandles of
 the live tree then: GIC 1, `crt_clk` 13, `reset1` 15, `sb2` 17, `reset4`
 25; the MISC GPIO controller has none. `scripts/install-dtb.sh` does the
-same install with every check (`--rollback` puts `.prev` back). In the PiKVM tree: `kernel/mainline/rtd1296-bananapi-w2.dts`, then
+same install with every check (`--rollback` puts `.prev` back).
+
+Second install, same day: the board DTS also got `dts/sata.dtsi` and
+`dts/ir.dtsi` (still uncommitted in the PiKVM repository). The diff
+against the installed DTB showed the new nodes (`ir-rx-pins`, `ir@400`,
+`phy@3ff00`, `sata@3f000`, `regulator-hdd-power`) and, again, renumbered
+phandles: `ir-rx-pins` took 0x0b, so `crt_clk` is now 14, `sb2` 18 and so
+on, and the MISC GPIO controller gained one (0x2a). Overlays built for
+the old numbers must be rebuilt -- but with the nodes in the DTB the test
+scripts skip the overlays anyway. Installed with `install-dtb.sh`
+(read-back of the raw slot matched), rebooted, booted from the eMMC. In the PiKVM tree: `kernel/mainline/rtd1296-bananapi-w2.dts`, then
 `make kernel-mainline` and `scripts/push-kernel-mainline.sh`
 (docs/board-and-tooling.md, "Graduating a driver"); `CHECK_DTBS=1` runs
 dt-validate there.
