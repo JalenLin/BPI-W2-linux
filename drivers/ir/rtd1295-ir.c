@@ -7,8 +7,14 @@
  * rc-core decodes works. In raw mode the unit samples the receiver's
  * output every 40 us and packs 32 samples per word into a FIFO, earliest
  * sample in bit 31, 0 while the carrier is present (the receiver module's
- * output is active low). It interrupts when the FIFO holds fifo_thr words,
- * and stops sampling stop_time samples after the last edge.
+ * output is active low). It interrupts when the FIFO holds fifo_thr words.
+ *
+ * Sampling starts at the first edge after the unit comes out of reset but
+ * does not stop again: stop_time and stop_sample have no effect that could
+ * be found (the stop bit does not even stick), nor does the soft reset or
+ * toggling raw_en. So once rc-core has seen the frame end (idle), the
+ * driver pulses the unit's reset and sets it up again, and the unit waits
+ * for the next edge instead of interrupting 50 times a second.
  *
  * Register layout: Realtek's iso_reg.h; values: Realtek's BSP driver
  * (drivers/net/irda/realtek/rtk_irda.c, its software-decoder mode).
@@ -16,12 +22,14 @@
 
 #include <linux/bitfield.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/workqueue.h>
 #include <media/rc-core.h>
 
 #define DRIVER_NAME		"rtd1295-ir"
@@ -58,52 +66,41 @@ struct rtd_ir {
 	struct device *dev;
 	void __iomem *base;
 	struct rc_dev *rc;
-	/* the run being measured, carried across words and interrupts */
-	bool pulse;
-	u32 samples;
-	bool idle;
+	struct reset_control *rst;
+	unsigned long rate;
+	int irq;
+	struct work_struct rearm;
+	bool dying;
 };
 
-static void rtd_ir_run_end(struct rtd_ir *ir)
-{
-	struct ir_raw_event ev = {
-		.pulse = ir->pulse,
-		.duration = ir->samples * IR_SAMPLE_US,
-	};
-
-	if (ir->samples)
-		ir_raw_event_store_with_filter(ir->rc, &ev);
-}
-
+/*
+ * One FIFO word: its runs of equal samples, earliest first. rc-core's
+ * filter merges a run with the previous one of the same kind (runs cross
+ * words and interrupts), and enters idle once a space reaches the timeout.
+ */
 static void rtd_ir_word(struct rtd_ir *ir, u32 word)
 {
-	u32 timeout = ir->rc->timeout / IR_SAMPLE_US;
-	int bit;
+	struct ir_raw_event ev = {};
+	int bit = 31;
 
-	for (bit = 31; bit >= 0; bit--) {
+	while (bit >= 0) {
 		bool pulse = !(word & BIT(bit));
+		int n = 0;
 
-		if (pulse != ir->pulse) {
-			if (!ir->idle)
-				rtd_ir_run_end(ir);
-			ir->pulse = pulse;
-			ir->samples = 0;
-			ir->idle = false;
+		while (bit >= 0 && !(word & BIT(bit)) == pulse) {
+			bit--;
+			n++;
 		}
-		ir->samples++;
-		/* a long enough space ends the frame */
-		if (!ir->pulse && !ir->idle && ir->samples >= timeout) {
-			rtd_ir_run_end(ir);
-			ir_raw_event_set_idle(ir->rc, true);
-			ir->idle = true;
-		}
+		ev.pulse = pulse;
+		ev.duration = n * IR_SAMPLE_US;
+		ir_raw_event_store_with_filter(ir->rc, &ev);
 	}
 }
 
 static irqreturn_t rtd_ir_irq(int irq, void *data)
 {
 	struct rtd_ir *ir = data;
-	u32 sr, n;
+	u32 sr, n, i, edges;
 
 	sr = readl(ir->base + IR_SR);
 	if (!(sr & (SR_RAW_OV | SR_RAW_VAL)))
@@ -114,21 +111,26 @@ static irqreturn_t rtd_ir_irq(int irq, void *data)
 	if (sr & SR_RAW_OV) {
 		dev_dbg(ir->dev, "raw FIFO overflow\n");
 		ir_raw_event_overflow(ir->rc);
-		ir->samples = 0;
-		ir->pulse = false;
-		ir->idle = true;
 	}
 
 	n = FIELD_GET(RAW_WL_VAL, readl(ir->base + IR_RAW_WL));
-	while (n--)
-		rtd_ir_word(ir, readl(ir->base + IR_RAW_FF));
+	edges = 0;
+	for (i = 0; i < n; i++) {
+		u32 word = readl(ir->base + IR_RAW_FF);
+
+		edges += word != U32_MAX;
+		rtd_ir_word(ir, word);
+	}
+	dev_dbg(ir->dev, "SR %#x, %u words, %u not all space\n", sr, n, edges);
 
 	ir_raw_event_handle(ir->rc);
 	return IRQ_HANDLED;
 }
 
-static void rtd_ir_hw_init(struct rtd_ir *ir, unsigned long rate)
+static void rtd_ir_hw_init(struct rtd_ir *ir)
 {
+	unsigned long rate = ir->rate;
+
 	writel(CR_SOFT_RESET, ir->base + IR_CR);
 	writel(DIV_ROUND_CLOSEST(rate, 1000000) * IR_SAMPLE_US - 1,
 	       ir->base + IR_SF);
@@ -144,6 +146,39 @@ static void rtd_ir_hw_init(struct rtd_ir *ir, unsigned long rate)
 	       ir->base + IR_CR);
 }
 
+/* rc-core: the frame is over (a space of rc->timeout) */
+static void rtd_ir_s_idle(struct rc_dev *rc, bool idle)
+{
+	struct rtd_ir *ir = rc->priv;
+
+	if (idle && !READ_ONCE(ir->dying))
+		schedule_work(&ir->rearm);
+}
+
+static void rtd_ir_rearm(struct work_struct *work)
+{
+	struct rtd_ir *ir = container_of(work, struct rtd_ir, rearm);
+
+	if (READ_ONCE(ir->dying))
+		return;
+	disable_irq(ir->irq);
+	reset_control_assert(ir->rst);
+	udelay(1);
+	reset_control_deassert(ir->rst);
+	rtd_ir_hw_init(ir);
+	enable_irq(ir->irq);
+}
+
+/* first thing on removal: no rearm may touch the unit after this */
+static void rtd_ir_quiesce(void *data)
+{
+	struct rtd_ir *ir = data;
+
+	WRITE_ONCE(ir->dying, true);
+	disable_irq(ir->irq);
+	cancel_work_sync(&ir->rearm);
+}
+
 static void rtd_ir_hw_stop(void *data)
 {
 	struct rtd_ir *ir = data;
@@ -154,24 +189,21 @@ static void rtd_ir_hw_stop(void *data)
 static int rtd_ir_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct reset_control *rst;
 	struct clk *clk, *ref;
-	unsigned long rate;
 	struct rtd_ir *ir;
-	int irq, ret;
+	int ret;
 
 	ir = devm_kzalloc(dev, sizeof(*ir), GFP_KERNEL);
 	if (!ir)
 		return -ENOMEM;
 	ir->dev = dev;
-	ir->idle = true;
 
 	ir->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(ir->base))
 		return PTR_ERR(ir->base);
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	ir->irq = platform_get_irq(pdev, 0);
+	if (ir->irq < 0)
+		return ir->irq;
 
 	clk = devm_clk_get_enabled(dev, "bus");
 	if (IS_ERR(clk))
@@ -180,12 +212,12 @@ static int rtd_ir_probe(struct platform_device *pdev)
 	ref = devm_clk_get_enabled(dev, "ref");
 	if (IS_ERR(ref))
 		return dev_err_probe(dev, PTR_ERR(ref), "no ref clock\n");
-	rate = clk_get_rate(ref);
-	if (rate < 1000000)
-		return dev_err_probe(dev, -EINVAL, "ref clock %lu Hz\n", rate);
-	rst = devm_reset_control_get_exclusive_deasserted(dev, NULL);
-	if (IS_ERR(rst))
-		return dev_err_probe(dev, PTR_ERR(rst), "no reset\n");
+	ir->rate = clk_get_rate(ref);
+	if (ir->rate < 1000000)
+		return dev_err_probe(dev, -EINVAL, "ref clock %lu Hz\n", ir->rate);
+	ir->rst = devm_reset_control_get_exclusive_deasserted(dev, NULL);
+	if (IS_ERR(ir->rst))
+		return dev_err_probe(dev, PTR_ERR(ir->rst), "no reset\n");
 
 	ir->rc = devm_rc_allocate_device(dev, RC_DRIVER_IR_RAW);
 	if (!ir->rc)
@@ -201,10 +233,12 @@ static int rtd_ir_probe(struct platform_device *pdev)
 	ir->rc->rx_resolution = IR_SAMPLE_US;
 	ir->rc->timeout = IR_DEFAULT_TIMEOUT;
 	ir->rc->min_timeout = 10 * IR_SAMPLE_US;
-	/* the unit keeps sampling for 200 ms after an edge, minus a FIFO's worth */
-	ir->rc->max_timeout = 150 * USEC_PER_MSEC;
+	/* frames end on a space this long; the unit samples on until rearmed */
+	ir->rc->max_timeout = 500 * USEC_PER_MSEC;
+	ir->rc->s_idle = rtd_ir_s_idle;
 
-	rtd_ir_hw_init(ir, rate);
+	INIT_WORK(&ir->rearm, rtd_ir_rearm);
+	rtd_ir_hw_init(ir);
 	ret = devm_add_action_or_reset(dev, rtd_ir_hw_stop, ir);
 	if (ret)
 		return ret;
@@ -213,7 +247,10 @@ static int rtd_ir_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = devm_request_irq(dev, irq, rtd_ir_irq, 0, DRIVER_NAME, ir);
+	ret = devm_request_irq(dev, ir->irq, rtd_ir_irq, 0, DRIVER_NAME, ir);
+	if (ret)
+		return ret;
+	ret = devm_add_action_or_reset(dev, rtd_ir_quiesce, ir);
 	if (ret)
 		return ret;
 

@@ -1,7 +1,8 @@
 # IR receiver
 
-Status (2026-10-05): driver written (`drivers/ir/rtd1295-ir.c`, rc-core,
-raw mode), **not tried on the board yet**. Builds clean (`W=1`,
+Status (2026-10-05): **works on the board** (`drivers/ir/rtd1295-ir.c`,
+rc-core, raw mode), tested with the user's air-conditioner remote through
+the development overlay. Builds clean (`W=1`,
 checkpatch --strict). DT in `dts/ir.dtsi`, binding validated. Needs an IR
 remote to test: any household remote works (NEC, RC-5, RC-6 and Sony are
 decoded).
@@ -53,10 +54,21 @@ samples of 40 us.
 
 Raw mode only; rc-core decodes. Bits are turned into runs and stored with
 `ir_raw_event_store_with_filter()`, carried across words and interrupts.
-A space of `rc->timeout` (default 125 ms) ends a frame (stored, then
-`ir_raw_event_set_idle()`): the unit keeps sampling 200 ms after the last
-edge, so such a space always arrives (minus at most one FIFO threshold,
-20 ms), hence `max_timeout` 150 ms. Overflow: `ir_raw_event_overflow()`.
+Runs go to `ir_raw_event_store_with_filter()`, which merges a run with
+the previous one of the same kind and enters idle once a space reaches
+`rc->timeout` (default 125 ms).
+
+**The unit never stops sampling by itself.** Sampling starts at the first
+edge after the unit leaves reset, then runs on: 16 words of all-space
+every 20 ms, 50 interrupts a second, forever. `stop_time`/`stop_sample`
+(the stop bit does not even read back), the soft reset (`CR` bit 31),
+toggling `raw_en`, and a full re-init after a soft reset all left it
+running. Only the unit's reset line (ISO reset 1, the IR's alone) puts it
+back to waiting for an edge. So when rc-core enters idle (`s_idle`), a
+work item pulses that reset and sets the unit up again: 6 interrupts per
+button press, none in between. Removal first stops the rearm (flag,
+`disable_irq`, `cancel_work_sync`) so nothing touches the unit after its
+clock is off. Overflow: `ir_raw_event_overflow()`.
 `linux,rc-map-name` picks a keymap (default `rc-empty`: scancodes only).
 
 The BSP's hardware NEC decoder, its key table, sysfs and chardev
@@ -109,4 +121,28 @@ missing clock name and a bogus property are reported. The board DTB with
 
 ## Tried
 
-Nothing on the board yet.
+2026-10-05, development overlay, development rc-core, the user's
+air-conditioner remote:
+
+- Probe: `rc0` with `/dev/lirc0` and an input device; the registers read
+  back as written (`SF` 0x437, `CR` 0x7300, `RAW_DEB` 0x21b, `RAW_CTRL`
+  0x00138810: the write-enable bits and `stop_sample` read 0); pin in
+  `ir_rx`, clock and reset on. No interrupt until the first button.
+- Frames: header 3280/1560 us, marks 480-560, spaces 320/1200-1240 us,
+  72 bits, pulse-distance. Temperature up, down, up:
+  `0c fd fc fc f8 38 fc 04 41`, `... d8 fc 04 a1`, `... 38 fc 04 41` --
+  the first and third identical bit for bit, and identical to the same
+  buttons pressed in an earlier session and driver load. (No standard
+  checksum matched the last byte: vendor protocol.) rc-core decodes no
+  scancode from it, as expected.
+- First version: sampling never stopped after a press (50 interrupts/s,
+  words all space, so no noise on the line), and calling
+  `ir_raw_event_set_idle()` after rc-core's filter had already entered
+  idle stored an empty event ("nonsensical timing event of duration 0",
+  "two consecutive events of type space"). Both fixed as described in
+  "The driver"; no warning since.
+- Unload and reload: IR reset asserted again (`0x98007088` back to
+  0x3fe0), its clock gate off; reload clean, 0 interrupts idle.
+
+Not done: the node from a board DTB (needs it installed), a remote that
+rc-core decodes (a TV remote: NEC/RC-5/RC-6/Sony scancodes end to end).
