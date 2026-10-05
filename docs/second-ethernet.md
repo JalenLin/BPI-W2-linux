@@ -242,7 +242,12 @@ ethtool: `-c/-C` (interrupt mitigation, rx/tx usecs and frames; default
 RX 32 frames / 200 us, TX 32 / 400 us), `-k/-K rx` (RX checksum),
 `-a/-A` (pause: negotiated by default, or forced), `-S` (port 5's MIB
 counters and the CPU port's discards), link settings and `-r` through
-phylib. Changing the MAC address works live (`ndo_set_mac_address`).
+phylib. Port 5's `rx_port_discards` and `rx_drop_events` are not
+error counters: they also count every frame the switch filters at port 5
+(unknown unicast the LAN floods, tagged frames on a VID with no VLAN
+device), each such frame moving both by one. On this LAN that is a few
+per ten minutes with the link idle. `rx_errors` (the kernel's) does not
+include them. Changing the MAC address works live (`ndo_set_mac_address`).
 
 The MIB counter registers are 22 bits wide (frame counters wrap after
 4,194,304 frames, under 3 s at line rate with small frames); a delayed
@@ -418,6 +423,19 @@ either way), so 256 stays.
 
 ## Findings
 
+- **Port 5's discard counters count filtering, not only loss.** The
+  first soak stopped after 25 minutes on 6 `rx_port_discards` (and 6
+  `rx_drop_events`), with 423,693 PAUSE frames sent. It looked like the
+  flow-control headroom: the switch has 500 buffer descriptors and starts
+  pausing at 428 (system and port thresholds). But stalling reception on
+  purpose (`fc-probe.sh`: threaded NAPI held off by an RT task, 950
+  Mbit/s UDP in, also with 950 Mbit/s out) sent 11,000-25,000 PAUSE frames
+  in 15 s and lost nothing: the LAN switch honours pause. With the link idle the
+  counters still moved, 4 in 10 minutes. `foreign-drop.py` (unicast to a
+  MAC nobody has, as a switch floods it) and `tagged-drop.py` (a VID with
+  no VLAN device) each move both counters by one per frame, and neither
+  does with eth1 promiscuous. The LAN floods unknown unicast now and then;
+  that was all of it. The soak now runs with eth1 promiscuous.
 - **Descriptor format.** Out of reset `CPUICR1.CF_PKT_HDR_TYPE` = 0
   selects the older RTL8198C layout. With the six-word descriptors still
   written, the core took descriptor 0, sent a 1538-byte frame with a bad
