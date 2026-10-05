@@ -132,15 +132,27 @@ docker run --rm -v "$PIKVM:/work" -v /tmp/t:/t bpiw2-pikvm/builder-mainline:trix
 Result: builds (the only warning, about `hdmirx@34000`'s unit address, is
 the board DTS's own); the node decompiles as intended (`clocks = <0x0d
 0x20>`, `resets = <0x0f 0x01>`, `realtek,sb2 = <0x11>`, interrupt 0x18);
-the existing phandles keep their numbers, the PHY gets a new one (0x20),
-so overlays and anything else keyed on phandles stay valid; dt-validate
-against the binding passes.
+dt-validate against the binding passes. A full diff against the DTB the
+board runs (both decompiled) shows the node and nothing else -- except
+that the PHY node takes phandle 0x20 and every phandle from 0x20 up moves
+by one (L2 cache, CPU clock, cpu-supply, OPP table, thermal trip). The
+DTB stays consistent; only something holding numeric phandles from
+outside would notice. The overlay's (1, 13, 15, 17) are below 0x20 and
+unchanged. (An earlier version of this note said no phandle moved; it had
+only looked at the low ones.)
 
 Then, for a kernel image: the node goes into the board DTS of whichever
 tree builds the image, and the driver into that kernel (`=m` or `=y`).
-Installing a new DTB writes the boot partition: **ask the user first**,
-and never reboot the board with an SD card in (it would boot from the
-card). In the PiKVM tree: `kernel/mainline/rtd1296-bananapi-w2.dts`, then
+Installing a new DTB writes the boot partition **and, on an eMMC-booted
+board, the eMMC's raw boot slot**: the eMMC's u-boot cannot read files
+from the eMMC and loads the DTB from a raw slot at 16 MiB, which
+`bpikvm-emmc-bootsync` (PiKVM) refreshes whenever the files under
+`/boot/bananapi/bpi-w2/linux` change. A bad DTB is then not fixed by
+renaming `.prev` back: it needs booting from an SD card and rewriting the
+slot. So: diff the new DTB against the installed one first, **ask the
+user**, keep `.prev`, and never reboot the board with an SD card in (it
+would boot from the card). Agents running in Claude Code's auto mode are
+refused this step; the user does it. In the PiKVM tree: `kernel/mainline/rtd1296-bananapi-w2.dts`, then
 `make kernel-mainline` and `scripts/push-kernel-mainline.sh`
 (docs/board-and-tooling.md, "Graduating a driver"); `CHECK_DTBS=1` runs
 dt-validate there.
