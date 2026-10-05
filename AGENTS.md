@@ -80,8 +80,10 @@ board.
 - Commit when a piece works or when a finding is worth keeping. Commit
   messages: a short subject, then what and why.
 - Remote: `origin` = `git@github.com:JalenLin/BPI-W2-linux.git`, **private**
-  (created 2026-10-05 at the user's request). Push only when the user says
-  so; do not make it public or add other remotes without the user.
+  for now; the user means to make it public later, so keep it fit for that:
+  kernel material only, no test setup, LAN details or credentials (those go
+  to `BPI-W2-linux-tools`, private). Push only when the user says so; do not
+  change visibility or add remotes without the user.
 - In `../bpiw2_pikvm`, keep `main` and `kernel-6.18` separate (never merge),
   and touch it only when the user wants a driver here in that image (see
   "Graduating a driver" in docs/board-and-tooling.md).
@@ -92,9 +94,9 @@ board.
 (`board/...`), the development overlays (`overlays/<name>/`), the rc-dev
 build (`rc-dev/`), the host scripts for them (`scripts/board-tools.sh`,
 `push-module.sh`, `build-overlay.sh`, `build-rc-dev.sh`, `install-dtb.sh`)
-and the test notes (`docs/testing.md`) live in a separate local repository,
-`../bpiw2_debug`, which is not published. The notes here name them by
-those paths.
+and the test notes (`docs/testing.md`) live in a separate repository,
+`JalenLin/BPI-W2-linux-tools` (private; checked out next to this one as
+`../bpiw2_debug`). The notes here name them by those paths.
 
 
 | Path | What |

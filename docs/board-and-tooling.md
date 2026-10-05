@@ -96,7 +96,7 @@ scripts/build-module.sh <name>         # drivers/<name>/ -> drivers/<name>/*.ko
 ```
 
 Copying a module to the board and loading it is the debug tools' job
-(`scripts/push-module.sh <x.ko>` in `../bpiw2_debug`).
+(`scripts/push-module.sh <x.ko>` in `BPI-W2-linux-tools`, at `../bpiw2_debug`).
 
 `drivers/<name>/Kbuild` holds `obj-m += ...`. The module's vermagic must
 match the running kernel (`6.18.55-bpiw2` at the time of writing; the
@@ -127,7 +127,7 @@ branch, with the user's agreement.
 
 ### Testing on the board
 
-In the debug tools (`../bpiw2_debug`, local): docs/testing.md has the
+In the debug tools (`BPI-W2-linux-tools`, private, at `../bpiw2_debug`): docs/testing.md has the
 setup (tools under `/root` via `scripts/board-tools.sh`, the far ends, the
 LAN), the tests with their scripts and pass criteria, the traps met, the
 safety rules.
