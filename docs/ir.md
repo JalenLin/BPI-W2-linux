@@ -1,8 +1,8 @@
 # IR receiver
 
 Status (2026-10-05): **works on the board** (`drivers/ir/rtd1295-ir.c`,
-rc-core, raw mode), tested with the user's air-conditioner remote through
-the development overlay. Builds clean (`W=1`,
+rc-core, raw mode), tested with the user's air-conditioner remote, through
+the development overlay and from the board DTB. Builds clean (`W=1`,
 checkpatch --strict). DT in `dts/ir.dtsi`, binding validated. Needs an IR
 remote to test: any household remote works (NEC, RC-5, RC-6 and Sony are
 decoded).
@@ -132,8 +132,8 @@ air-conditioner remote:
   72 bits, pulse-distance. Temperature up, down, up:
   `0c fd fc fc f8 38 fc 04 41`, `... d8 fc 04 a1`, `... 38 fc 04 41` --
   the first and third identical bit for bit, and identical to the same
-  buttons pressed in an earlier session and driver load. (No standard
-  checksum matched the last byte: vendor protocol.) rc-core decodes no
+  buttons pressed in an earlier session and driver load. (No checksum
+  matched LSB first; see below for MSB first.) rc-core decodes no
   scancode from it, as expected.
 - First version: sampling never stopped after a press (50 interrupts/s,
   words all space, so no noise on the line), and calling
@@ -144,5 +144,15 @@ air-conditioner remote:
 - Unload and reload: IR reset asserted again (`0x98007088` back to
   0x3fe0), its clock gate off; reload clean, 0 interrupts idle.
 
-Not done: the node from a board DTB (needs it installed), a remote that
-rc-core decodes (a TV remote: NEC/RC-5/RC-6/Sony scancodes end to end).
+- **From the board DTB** (`dts/ir.dtsi`, installed 2026-10-05): probes
+  without the overlay, pin in `ir_rx`, no interrupt while idle. Down
+  then up: `... f8 58 fc 04 21`, `... f8 d8 fc 04 a1`.
+- **The frames decoded**: the protocol is MSB first. Bit-reversed, byte 6
+  is the temperature in degrees C (0x1a 26, 0x1b 27, 0x1c 28), and the
+  last byte is the XOR of the other eight, XOR 0x11 -- it holds in all
+  three temperatures captured (26: 0x95 ^ 0x11 = 0x84; 27: 0x85; 28:
+  0x82). Any wrong bit among the 72 would break it: the capture is
+  bit-exact, through both the overlay and the DTB, across driver loads.
+
+Not done: a remote that rc-core decodes (a TV remote: NEC/RC-5/RC-6/Sony
+scancodes end to end).
