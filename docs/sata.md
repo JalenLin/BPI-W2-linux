@@ -160,7 +160,7 @@ exists).
   on the development host through a USB adapter, so the drive, not the
   board. Most likely the abrupt power-off after writes (no STANDBY
   IMMEDIATE). **It recovered**: left powered and idle on the host for
-  about 30 minutes, then unplugged and plugged back in, it came back as
+  more than 30 minutes, then unplugged and plugged back in, it came back as
   the ADATA SX930, 240 GB, with the GPT and the ext4 written by
   `sata-fs.sh` still there. (I had expected a loader-mode drive not to
   recover this way; it did.) Lesson in docs/testing.md.
