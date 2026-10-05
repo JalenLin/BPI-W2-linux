@@ -4,8 +4,9 @@
 `kernel/mainline/rtd1296-bananapi-w2.dts` (branch `kernel-6.18`, commit
 `3398bdd`) **with the nodes from this repository appended**: the second
 RJ45 (`dts/nat-eth.dtsi`), SATA (`dts/sata.dtsi`) and the IR receiver
-(`dts/ir.dtsi`). In the PiKVM repository those additions are an
-uncommitted change; this copy keeps them safe.
+(`dts/ir.dtsi`). The PiKVM repository keeps its own board DTS without
+them, at what PiKVM itself needs; this is the
+board DTS of this kernel.
 `rtd1296-bananapi-w2.dts.pikvm.diff` is that change against `3398bdd`.
 
 Built from it (2026-10-05, the PiKVM kernel tree, `make dtbs`):

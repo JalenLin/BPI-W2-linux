@@ -247,7 +247,7 @@ counters and the CPU port's discards), link settings and `-r` through
 phylib. Port 5's `rx_port_discards` and `rx_drop_events` are not
 error counters: they also count every frame the switch filters at port 5
 (unknown unicast the LAN floods, tagged frames on a VID with no VLAN
-device), each such frame moving both by one. On this LAN that is a few
+device), each such frame moving both by one. On the test LAN that is a few
 per ten minutes with the link idle. `rx_errors` (the kernel's) does not
 include them. Changing the MAC address works live (`ndo_set_mac_address`).
 
@@ -356,7 +356,7 @@ ICMP from eth0 too).
 
 ### 802.1Q VLANs
 
-At first this LAN's switch passed only VID 0 (delivered
+At first the test LAN's switch passed only VID 0 (delivered
 untagged) and dropped every other VID; the user then set it to trunk VIDs
 2700-2710. Before any VLAN code, tagged frames from eth1 left with their
 tag intact, and tagged frames for eth1 were discarded at port 5's ingress
@@ -485,7 +485,7 @@ either way), so 256 stays.
   (`SWTCR0` = port based, `PLITIMR` port 5 -> netif 0), one entry covers
   every VID on the port.
 - **"TCP runs slower after a link change" -- what it really was**
-  (2026-10-05, corrects an earlier note that blamed this LAN; the eth0
+  (2026-10-05, corrects an earlier note that blamed the test LAN; the eth0
   comparison behind it never renegotiated eth0: r8169soc does not support
   `ethtool -r`):
   - phylib polls the PHY once a second (the RTL8211F's INTB pin is not
