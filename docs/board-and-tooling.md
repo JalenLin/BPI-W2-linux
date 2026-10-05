@@ -40,6 +40,24 @@ Registers of a block whose clock is gated read `0xdeadbeef`. **Do not write
 registers by hand unless you know what is behind them** -- and never the
 PMIC (see AGENTS.md).
 
+## Never unbind or rebind the SD card driver
+
+`rtd129x-sdmmc` (98010400.mmc, the PiKVM kernel's SD host) holds the "CR"
+clock (`<&crt_clk 25>`) and pulses `RSTN_CR` in probe. The eMMC -- the
+root filesystem -- sits in the same card-reader block but does not
+reference either, so:
+
+- unbind: devm drops the last reference to the CR clock and it is gated;
+  the eMMC times out on every command from that moment;
+- bind: the `RSTN_CR` pulse resets the clock generator the boot loader set
+  up for the eMMC; its driver cannot recover it.
+
+On 2026-10-05 this left the root filesystem unwritable (CMD24/25/17
+timeouts, the eMMC down to 25 MHz 1-bit) and needed a hard reset (the
+shutdown hung on I/O). The filesystem came back clean. To recover a stuck
+SD card, pull and reinsert it, or reboot -- **with the card out**: with a
+card in, the board boots from the card.
+
 ## Read this before writing any DMA driver: SB2
 
 The RTD129x bus bridge, SB2, **holds CPU writes to DDR back until it is
