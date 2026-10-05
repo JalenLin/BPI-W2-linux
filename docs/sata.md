@@ -163,7 +163,17 @@ exists).
   more than 30 minutes, then unplugged and plugged back in, it came back as
   the ADATA SX930, 240 GB, with the GPT and the ext4 written by
   `sata-fs.sh` still there. (I had expected a loader-mode drive not to
-  recover this way; it did.) Lesson in docs/testing.md.
+  recover this way; it did.)
+  **Then it did it again after a clean removal**: taken off the board
+  with `sata-up.sh down` ("Synchronizing SCSI cache", "Stopping disk",
+  regulator off) and plugged into the host, it came up as the loader
+  once more. So the abrupt power-off is not the explanation: this SSD
+  intermittently fails to load its firmware at power-on (loader on the
+  board once, on the host three times; SX930 on the board three times
+  and on the host once, after a long powered idle). A drive fault,
+  unrelated to the driver -- every test it passed while up stands, but
+  it is not a disk to soak with. A clean shutdown before cutting power
+  remains the rule (docs/testing.md).
 
 - **From the board DTB** (`dts/sata.dtsi` plus `dts/ir.dtsi` appended to
   the PiKVM board DTS, uncommitted there; installed with
