@@ -87,20 +87,21 @@ three.
 
 ## Building a driver here
 
-External modules, built against this repository's kernel tree
-(docs/kernel-build.md), in its container:
+The drivers are part of the kernel build (docs/kernel-build.md): a driver's
+source goes in `kernel/src/`, a patch in `kernel/patches/` hooks it into
+its subsystem's Kconfig and Makefile, `kernel/configs/bpiw2.config`
+enables it, and `make kernel` builds it with everything else.
 
 ```sh
-make builder kernel-sources kernel     # once
-scripts/build-module.sh <name>         # drivers/<name>/ -> drivers/<name>/*.ko
+make builder kernel-sources kernel     # once; then make kernel after a change
 ```
 
-Copying a module to the board and loading it is the debug tools' job
-(`scripts/push-module.sh <x.ko>` in `BPI-W2-linux-tools`, at `../bpiw2_debug`).
-
-`drivers/<name>/Kbuild` holds `obj-m += ...`. The module's vermagic must
-match the running kernel (`6.18.55-bpiw2` at the time of writing; the
-board runs the PiKVM build, whose `.config` is identical).
+The modules end up in `vendor/linux` (`find vendor/linux -name '*.ko'`).
+Their vermagic must match the running kernel: with the drivers enabled,
+this kernel's `.config` is no longer the PiKVM kernel's, so its modules
+are for this kernel installed on the board, not for the PiKVM image.
+Copying modules or a kernel to the board is the debug tools' job
+(`BPI-W2-linux-tools`, at `../bpiw2_debug`).
 
 ### Device tree
 

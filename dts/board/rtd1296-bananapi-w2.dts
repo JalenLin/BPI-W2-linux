@@ -874,9 +874,8 @@
 };
 
 /*
- * TESTING (uncommitted): the second RJ45, from ../bpiw2_peripherals
- * dts/nat-eth.dtsi; the driver is drivers/nat-eth/rtd1295-hwnat.c there,
- * loaded as a module.
+ * The second RJ45 (dts/nat-eth.dtsi): port 5 of the NAT engine, driver
+ * rtd1295-hwnat (kernel/src, patch 0019).
  */
 &rbus {
 	nat: ethernet@60000 {
@@ -903,15 +902,15 @@
 };
 
 /*
- * TESTING (uncommitted): SATA and the IR receiver, from ../bpiw2_peripherals
- * dts/sata.dtsi and dts/ir.dtsi. Their drivers are out-of-tree modules there.
+ * SATA and the IR receiver (dts/sata.dtsi, dts/ir.dtsi): the generic AHCI
+ * driver with phy-rtd1295-sata (patch 0020), and rtd1295-ir (patch 0021).
  */
 /*
  * BPI-W2: SATA (docs/sata.md). Appended to the board DTS, which already
  * includes the GIC and RTD1295 reset headers.
  *
  * The AHCI controller is the generic one (ahci_platform); its PHYs need
- * drivers/sata/phy-rtd1295-sata.c. Both ports are described; the board
+ * phy-rtd1295-sata (kernel/src). Both ports are described; the board
  * has a connector for each (CN12/CN15, schematic "SATA/USB HUB").
  */
 #include <dt-bindings/gpio/gpio.h>

@@ -5,7 +5,7 @@ SATA III's limit, writes verified, ext4, all alongside the other DMA
 masters (see "Tried"), on both ports, from the board DTB (`dts/sata.dtsi`,
 installed 2026-10-05) with the drive power regulator.
 Mainline's generic AHCI driver (`ahci_platform`, built in) does the
-controller; `drivers/sata/phy-rtd1295-sata.c` is the PHY. Builds clean
+controller; `kernel/src/phy-rtd1295-sata.c` is the PHY (built in). Builds clean
 (`W=1`, checkpatch --strict); its PHY register writes are, word for word,
 what the BSP writes on this chip (checked by re-encoding the tables). DT
 in `dts/sata.dtsi`, binding validated. Test drive: ADATA SX930 240 GB

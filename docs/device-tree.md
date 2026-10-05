@@ -1,6 +1,6 @@
 # Device tree: how a driver here gets its node
 
-Written for the second RJ45 (`drivers/nat-eth/`), the first driver done
+Written for the second RJ45 (`kernel/src/rtd1295-hwnat.c`), the first driver done
 this way; the same steps apply to SATA, PCIe and IR. Everything below was
 run on 2026-10-05.
 

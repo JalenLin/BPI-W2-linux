@@ -12,7 +12,6 @@ make builder          # the container image bpiw2-kernel/builder:trixie, once
 make kernel-sources   # vendor/linux: v6.18.55 from kernel.org + kernel/patches
 make kernel           # Image, the board DTB, modules (in vendor/linux)
 make dtbs             # just the DTBs; CHECK_DTBS=1 scripts/build-kernel.sh validates
-scripts/build-module.sh <driver>   # an out-of-tree driver against that tree
 ```
 
 | Path | What |
@@ -26,8 +25,11 @@ scripts/build-module.sh <driver>   # an out-of-tree driver against that tree
 | `scripts/build-kernel.sh` | Copies the board DTS and `kernel/src/` in, merges the fragment (only when it changed), builds |
 | `vendor/linux` | The tree (gitignored) |
 
-The out-of-tree drivers in `drivers/` (second RJ45, SATA PHY, IR) are not
-in the kernel yet: they still load with `insmod` (docs/board-and-tooling.md).
+The second RJ45, SATA PHY and IR drivers are in the tree too: their
+sources in `kernel/src/`, hooked in by patches 0019-0021, the AHCI
+binding extended by 0022, their bindings copied in from `dts/bindings/`,
+enabled in the fragment (`RTD1295_HWNAT=m`, `PHY_RTD1295_SATA=y`,
+`IR_RTD1295=m`, and rc-core's LIRC and NEC/RC-5/RC-6/Sony decoders).
 
 ## Verified (2026-10-05)
 
@@ -53,3 +55,14 @@ Dockerfile; this repository's own image was still downloading):
   14.2.0-19, DTC 1.7.2, dtschema 2026.9). `make clean` and a full build:
   3 min 40 s, Image 43612672 bytes, DTB md5 `f9a5e9b3...` again, 1416
   modules; the three drivers rebuild clean.
+
+## The drivers in-tree (2026-10-05)
+
+The three drivers moved from out-of-tree modules into the build (patches
+0019-0022, config above). The 22 patches apply cleanly on v6.18.55; a full
+build with `CHECK_DTBS=1` passes, the board DTB validates against the
+bindings with no message about its SATA, IR or NAT nodes (patch 0022 lets
+`realtek,rtd1295-ahci` have a reset per port), and is still byte-identical
+(`f9a5e9b3...`). `.config` now differs from the PiKVM kernel's by these
+options, so this kernel's modules are no longer for the PiKVM kernel the
+board runs: testing the in-tree drivers needs this kernel on the board.

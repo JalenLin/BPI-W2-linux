@@ -1,0 +1,39 @@
+From: JalenLin <jalen.lin@gmail.com>
+Subject: [PATCH] media: rc: add the RTD1295 IR receiver
+
+The IR unit of the RTD1295/RTD1296 ISO block, in raw mode, for rc-core to
+decode. The driver, rtd1295-ir.c, is kept in kernel/src and copied in by
+scripts/build-kernel.sh; these lines hook it in.
+
+diff --git a/drivers/media/rc/Kconfig b/drivers/media/rc/Kconfig
+--- a/drivers/media/rc/Kconfig
++++ b/drivers/media/rc/Kconfig
+@@ -340,6 +340,17 @@ config IR_REDRAT3
+ 	   To compile this driver as a module, choose M here: the
+ 	   module will be called redrat3.
+ 
++config IR_RTD1295
++	tristate "Realtek RTD1295/RTD1296 IR receiver"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	depends on OF
++	help
++	   Say Y if you want to use the IR receiver of the Realtek
++	   RTD1295/RTD1296 SoCs (raw mode: every protocol rc-core decodes).
++
++	   To compile this driver as a module, choose M here: the module will
++	   be called rtd1295-ir.
++
+ config IR_SERIAL
+ 	tristate "Homebrew Serial Port Receiver"
+ 	depends on HAS_IOPORT
+diff --git a/drivers/media/rc/Makefile b/drivers/media/rc/Makefile
+--- a/drivers/media/rc/Makefile
++++ b/drivers/media/rc/Makefile
+@@ -43,6 +43,7 @@ obj-$(CONFIG_IR_MTK) += mtk-cir.o
+ obj-$(CONFIG_IR_NUVOTON) += nuvoton-cir.o
+ obj-$(CONFIG_IR_PWM_TX) += pwm-ir-tx.o
+ obj-$(CONFIG_IR_REDRAT3) += redrat3.o
++obj-$(CONFIG_IR_RTD1295) += rtd1295-ir.o
+ obj-$(CONFIG_IR_SERIAL) += serial_ir.o
+ obj-$(CONFIG_IR_SPI) += ir-spi.o
+ obj-$(CONFIG_IR_STREAMZAP) += streamzap.o

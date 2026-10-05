@@ -1,6 +1,6 @@
 # IR receiver
 
-Status (2026-10-05): **works on the board** (`drivers/ir/rtd1295-ir.c`,
+Status (2026-10-05): **works on the board** (`kernel/src/rtd1295-ir.c`,
 rc-core, raw mode), tested with the user's air-conditioner remote, through
 the development overlay and from the board DTB. Builds clean (`W=1`,
 checkpatch --strict). DT in `dts/ir.dtsi`, binding validated. Needs an IR
@@ -87,7 +87,9 @@ RC-5, RC-6 and Sony decoders from the kernel tree into
 them and the driver with one set of options. They load from `/root` with
 `insmod` instead of the board's `rc-core.ko` (not loaded by anything on
 the PiKVM image). A driver built that way only works with that rc-core:
-for a kernel with its own decoders, use `scripts/build-module.sh ir` here.
+This kernel now has the decoders and LIRC itself (`kernel/configs/`), so
+the development rc-core is only needed for the PiKVM kernel the board ran
+while the driver was written.
 
 ```sh
 scripts/build-rc-dev.sh; scripts/build-overlay.sh ir     # debug tools

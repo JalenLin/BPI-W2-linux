@@ -1,7 +1,7 @@
 # The second RJ45 (hardware NAT engine)
 
 Status (2026-10-05): **complete**, as a loadable module,
-`drivers/nat-eth/rtd1295-hwnat.c` (checkpatch --strict clean), with the
+`kernel/src/rtd1295-hwnat.c` (checkpatch --strict clean), with the
 node in the board DTB since 2026-10-05 (installed on the board; the
 change to the PiKVM board DTS is local and uncommitted) -- the driver
 probes from it without the overlay. Four-hour soak passed (`docs/testing.md` of the debug tools).
@@ -175,7 +175,7 @@ this driver exists in BPI's trees (u-boot and the BSP 4.9 kernel have none).
 
 ## The driver
 
-`drivers/nat-eth/rtd1295-hwnat.c` (compatible `realtek,rtd1295-hwnat`),
+`kernel/src/rtd1295-hwnat.c` (compatible `realtek,rtd1295-hwnat`),
 DT node in `dts/nat-eth.dtsi`. A plain NIC: phylib, NAPI, one RX and one
 TX ring, RX checksum offload; no switch features.
 
@@ -288,12 +288,13 @@ entry (`_rtl8651_asicTableSize`): L2 2, netif 5, VLAN 3, ACL 11.
 The procedures, the scripts and the traps: docs/testing.md. The node and
 its overlay: docs/device-tree.md.
 
-The base DTB has no `__symbols__`, so the node goes in as a runtime
-overlay with the running board's phandles:
+The node is in the board DTS (`dts/board/`) and the driver in the kernel
+build (`CONFIG_RTD1295_HWNAT=m`). While it was being written, the base DTB
+had no `__symbols__`, so the node went in as a runtime overlay with the
+running board's phandles (the debug tools' `overlays/nat-eth/`):
 
 ```sh
 scripts/build-overlay.sh nat-eth      # (debug tools) fills and builds the overlay
-scripts/build-module.sh nat-eth       # rtd1295-hwnat.ko and nat-overlay-mod.ko
 # on the board: insmod nat-overlay-mod.ko (adds the node), insmod rtd1295-hwnat.ko
 ```
 

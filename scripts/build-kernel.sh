@@ -41,6 +41,11 @@ rm -rf drivers/media/platform/realtek-rtd129x-hdmirx sound/realtek-rtd129x-acpu
 cp -r $S/hdmirx drivers/media/platform/realtek-rtd129x-hdmirx
 cp -r $S/acpu sound/realtek-rtd129x-acpu
 cp "$S/realtek,rtd1295-irq-mux.yaml" Documentation/devicetree/bindings/interrupt-controller/
+cp $S/rtd1295-hwnat.c drivers/net/ethernet/realtek/
+cp $S/phy-rtd1295-sata.c drivers/phy/realtek/
+cp $S/rtd1295-ir.c drivers/media/rc/
+# bindings, by subsystem directory (net/, phy/, media/)
+cp -r /work/dts/bindings/. Documentation/devicetree/bindings/
 
 # arm64 defconfig, then only what this board needs on top
 FRAGMENTS="/work/kernel/configs/bpiw2.config"

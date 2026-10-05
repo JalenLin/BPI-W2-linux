@@ -102,9 +102,8 @@ and the test notes (`docs/testing.md`) live in a separate repository,
 | Path | What |
 |---|---|
 | `docker/`, `kernel/`, `vendor/linux` | The kernel build: container, patches, new files, config fragment; the fetched tree (gitignored) |
-| `drivers/<feature>/` | One directory per driver, built as an external module against `vendor/linux` |
 | `dts/` | Device-tree fragments for the board; `dts/board/` the board DTS; `dts/bindings/` the DT bindings (docs/device-tree.md) |
-| `scripts/` | Kernel and module build: `fetch-kernel.sh`, `build-kernel.sh`, `in-docker.sh`, `build-module.sh` |
+| `scripts/` | Kernel build: `fetch-kernel.sh`, `build-kernel.sh`, `in-docker.sh` |
 | `docs/` | Per-feature notes: what the hardware is, where the BSP code is, what is known, what has been tried |
 
 ## How to work on a feature
@@ -112,7 +111,9 @@ and the test notes (`docs/testing.md`) live in a separate repository,
 1. Read its `docs/<feature>.md`. Add what you find there as you go,
    including dead ends: they cost time to rediscover.
 2. Read the BSP driver it names, and the DT node data quoted there.
-3. Write the driver in `drivers/<feature>/` (mainline APIs: `devm_*`,
+3. Write the driver in `kernel/src/`, hooked in by a patch in
+   `kernel/patches/` (Kconfig, Makefile) and enabled in
+   `kernel/configs/bpiw2.config` (mainline APIs: `devm_*`,
    regmap or plain MMIO, `reset_control`, `clk`, existing subsystems such
    as libahci_platform, rc-core, the PCI host bridge helpers or phylink).
 4. Add its DT node to `dts/` and to the board DTS (`dts/board/`). Test it

@@ -1,0 +1,43 @@
+From: JalenLin <jalen.lin@gmail.com>
+Subject: [PATCH] net: realtek: add the RTD1295 NAT engine's port 5 as a NIC
+
+The second RJ45 of the BPI-W2: port 5 (RGMII0) of the SoC's hardware NAT
+engine, an RTL8197F-style switch core, used as a plain network interface.
+The driver, rtd1295-hwnat.c, is kept outside the kernel tree in kernel/src
+and copied in by scripts/build-kernel.sh; these lines hook it in.
+
+diff --git a/drivers/net/ethernet/realtek/Kconfig b/drivers/net/ethernet/realtek/Kconfig
+--- a/drivers/net/ethernet/realtek/Kconfig
++++ b/drivers/net/ethernet/realtek/Kconfig
+@@ -135,6 +135,22 @@ config R8169SOC
+ 	  This is Realtek's own platform driver, carried over from their
+ 	  4.9 BSP.
+ 
++config RTD1295_HWNAT
++	tristate "Realtek RTD1295/RTD1296 NAT engine port 5 as a NIC"
++	depends on ARCH_REALTEK || COMPILE_TEST
++	depends on OF && HAS_IOMEM && HAS_DMA
++	select MFD_SYSCON
++	select PHYLIB
++	select OF_MDIO
++	help
++	  The RTD1295/RTD1296 hardware NAT engine is a small switch core
++	  (an RTL8197F-style one) with a CPU port. This driver uses it as a
++	  plain network interface on its port 5 (RGMII0), with an external
++	  PHY: the second RJ45 of the Banana Pi BPI-W2.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called rtd1295-hwnat.
++
+ config RTASE
+ 	tristate "Realtek Automotive Switch 9054/9068/9072/9075/9068/9071 PCIe Interface support"
+ 	depends on PCI
+diff --git a/drivers/net/ethernet/realtek/Makefile b/drivers/net/ethernet/realtek/Makefile
+--- a/drivers/net/ethernet/realtek/Makefile
++++ b/drivers/net/ethernet/realtek/Makefile
+@@ -10,4 +10,5 @@ r8169-y += r8169_main.o r8169_firmware.o r8169_phy_config.o
+ r8169-$(CONFIG_R8169_LEDS) += r8169_leds.o
+ obj-$(CONFIG_R8169) += r8169.o
+ obj-$(CONFIG_R8169SOC) += r8169soc.o
++obj-$(CONFIG_RTD1295_HWNAT) += rtd1295-hwnat.o
+ obj-$(CONFIG_RTASE) += rtase/

@@ -1,0 +1,50 @@
+From: JalenLin <jalen.lin@gmail.com>
+Subject: [PATCH] dt-bindings: ata: ahci-platform: add realtek,rtd1295-ahci
+
+The RTD1295/RTD1296 AHCI controller is a generic one with a reset per
+port; its PHYs have their own binding (realtek,rtd1295-sata-phy).
+
+diff --git a/Documentation/devicetree/bindings/ata/ahci-platform.yaml b/Documentation/devicetree/bindings/ata/ahci-platform.yaml
+--- a/Documentation/devicetree/bindings/ata/ahci-platform.yaml
++++ b/Documentation/devicetree/bindings/ata/ahci-platform.yaml
+@@ -32,6 +32,7 @@ select:
+           - marvell,berlin2q-ahci
+           - qcom,apq8064-ahci
+           - qcom,ipq806x-ahci
++          - realtek,rtd1295-ahci
+           - socionext,uniphier-pro4-ahci
+           - socionext,uniphier-pxs2-ahci
+           - socionext,uniphier-pxs3-ahci
+@@ -49,6 +50,7 @@ properties:
+               - marvell,berlin2q-ahci
+               - qcom,apq8064-ahci
+               - qcom,ipq806x-ahci
++              - realtek,rtd1295-ahci
+               - socionext,uniphier-pro4-ahci
+               - socionext,uniphier-pxs2-ahci
+               - socionext,uniphier-pxs3-ahci
+@@ -160,9 +162,21 @@ allOf:
+         required:
+           - resets
+       else:
+-        properties:
+-          resets:
+-            maxItems: 1
++        if:
++          properties:
++            compatible:
++              contains:
++                const: realtek,rtd1295-ahci
++        then:
++          properties:
++            resets:
++              items:
++                - description: reset for the port 0 controller
++                - description: reset for the port 1 controller
++        else:
++          properties:
++            resets:
++              maxItems: 1
+ 
+ unevaluatedProperties: false
+ 

@@ -10,8 +10,7 @@ came from and still the image the board is tested with.
 ```sh
 make builder          # build container (DEBIAN_MIRROR=... if the Debian CDN is slow)
 make kernel-sources   # v6.18.55 + kernel/patches into vendor/linux
-make kernel           # Image, the board DTB, modules
-scripts/build-module.sh <nat-eth|sata|ir>   # the drivers not yet in-tree
+make kernel           # Image, the board DTB, modules (the drivers below included)
 ```
 
 [docs/kernel-build.md](docs/kernel-build.md) has the details. Start with

@@ -4,7 +4,7 @@
  * includes the GIC and RTD1295 reset headers.
  *
  * The AHCI controller is the generic one (ahci_platform); its PHYs need
- * drivers/sata/phy-rtd1295-sata.c. Both ports are described; the board
+ * phy-rtd1295-sata (kernel/src). Both ports are described; the board
  * has a connector for each (CN12/CN15, schematic "SATA/USB HUB").
  */
 #include <dt-bindings/gpio/gpio.h>

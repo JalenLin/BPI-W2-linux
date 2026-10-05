@@ -2,7 +2,7 @@
 /*
  * The second RJ45: port 5 of the hardware NAT switch core, RGMII0 to an
  * RTL8211F at MDIO address 1 (schematic page 12, "HWNAT_0").
- * drivers/nat-eth/rtd1295-hwnat.c. Goes into the board DTS.
+ * Driver: rtd1295-hwnat (kernel/src). Goes into the board DTS.
  */
 &rbus {
 	nat: ethernet@60000 {
