@@ -1,0 +1,130 @@
+diff --git a/kernel/mainline/rtd1296-bananapi-w2.dts b/kernel/mainline/rtd1296-bananapi-w2.dts
+index 3eba833..82518a1 100644
+--- a/kernel/mainline/rtd1296-bananapi-w2.dts
++++ b/kernel/mainline/rtd1296-bananapi-w2.dts
+@@ -872,3 +872,125 @@
+ 		};
+ 	};
+ };
++
++/*
++ * TESTING (uncommitted): the second RJ45, from ../bpiw2_peripherals
++ * dts/nat-eth.dtsi; the driver is drivers/nat-eth/rtd1295-hwnat.c there,
++ * loaded as a module.
++ */
++&rbus {
++	nat: ethernet@60000 {
++		compatible = "realtek,rtd1295-hwnat";
++		reg = <0x60000 0x170000>;
++		interrupts = <GIC_SPI 24 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&crt_clk 32>;			/* CLK_EN2 0: NAT */
++		resets = <&reset1 RTD1295_RSTN_NAT>;
++		realtek,sb2 = <&sb2>;			/* RGMII0 pad control */
++		/* the RTL8211F's RX delay is strapped on, TX delay is set by its driver */
++		phy-mode = "rgmii-id";
++		phy-handle = <&nat_phy>;
++
++		mdio {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			nat_phy: ethernet-phy@1 {
++				reg = <1>;
++				realtek,clkout-disable;
++			};
++		};
++	};
++};
++
++/*
++ * TESTING (uncommitted): SATA and the IR receiver, from ../bpiw2_peripherals
++ * dts/sata.dtsi and dts/ir.dtsi. Their drivers are out-of-tree modules there.
++ */
++/*
++ * BPI-W2: SATA (docs/sata.md). Appended to the board DTS, which already
++ * includes the GIC and RTD1295 reset headers.
++ *
++ * The AHCI controller is the generic one (ahci_platform); its PHYs need
++ * drivers/sata/phy-rtd1295-sata.c. Both ports are described; the board
++ * has a connector for each (CN12/CN15, schematic "SATA/USB HUB").
++ */
++#include <dt-bindings/gpio/gpio.h>
++
++/ {
++	/* 5VS_HDD and 12VS_HDD: load switches enabled by HDD0_PWR = GPIO 56 */
++	hdd_power: regulator-hdd-power {
++		compatible = "regulator-fixed";
++		regulator-name = "hdd-power";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		gpio = <&misc_gpio 56 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++};
++
++&rbus {
++	/* the AHCI block's wrapper registers, with the PHYs' MDIO */
++	sata_phy: phy@3ff00 {
++		compatible = "realtek,rtd1295-sata-phy";
++		reg = <0x3ff00 0x100>;
++		clocks = <&crt_clk 7>, <&crt_clk 58>;	/* CLK_EN1 7, CLK_EN2 26: SATA_ALIVE_0/1 */
++		clock-names = "alive0", "alive1";
++		resets = <&reset1 RTD1295_RSTN_SATA_PHY_0>,
++			 <&reset1 RTD1295_RSTN_SATA_PHY_POW_0>,
++			 <&reset4 RTD1295_RSTN_SATA_PHY_1>,
++			 <&reset4 RTD1295_RSTN_SATA_PHY_POW_1>;
++		reset-names = "phy0", "pow0", "phy1", "pow1";
++		realtek,sb2 = <&sb2>;			/* SATA_PHY_CTRL, chip revision */
++		#phy-cells = <1>;
++	};
++
++	sata: sata@3f000 {
++		compatible = "realtek,rtd1295-ahci", "generic-ahci";
++		reg = <0x3f000 0xf00>;
++		interrupts = <GIC_SPI 28 IRQ_TYPE_LEVEL_HIGH>;
++		clocks = <&crt_clk 2>, <&crt_clk 57>;	/* CLK_EN1 2, CLK_EN2 25: SATA_0/1 */
++		resets = <&reset1 RTD1295_RSTN_SATA_0>,
++			 <&reset4 RTD1295_RSTN_SATA_1>;
++		ports-implemented = <0x3>;		/* reads 0 out of reset */
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		sata-port@0 {
++			reg = <0>;
++			phys = <&sata_phy 0>;
++			target-supply = <&hdd_power>;
++		};
++
++		sata-port@1 {
++			reg = <1>;
++			phys = <&sata_phy 1>;
++			target-supply = <&hdd_power>;
++		};
++	};
++};
++
++/*
++ * BPI-W2: the IR receiver (docs/ir.md). Appended to the board DTS, which
++ * already has the ISO clock gates and pin mux nodes it refers to.
++ */
++
++&iso_pinmux {
++	/* IR_RX: ISO_MUXPAD0 bits 7:6, function 1 */
++	ir_rx_pins: ir-rx-pins {
++		pinctrl-single,bits = <0x0 0x00000040 0x000000c0>;
++	};
++};
++
++&iso {
++	ir: ir@400 {
++		compatible = "realtek,rtd1295-ir";
++		reg = <0x400 0x100>;
++		interrupt-parent = <&iso_irq_mux>;
++		interrupts = <5>;
++		clocks = <&iso_clk 7>, <&osc27M>;	/* ISO CLK_EN bit 7: IR; sampling */
++		clock-names = "bus", "ref";
++		resets = <&iso_reset RTD1295_ISO_RSTN_IR>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&ir_rx_pins>;
++	};
++};
